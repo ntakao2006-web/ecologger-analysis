@@ -18,7 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import __version__, laps, lines, overlay, session
+import numpy as np
+
+from . import __version__, formula, laps, lines, overlay, session
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 HOME = Path.home() / '.ecologger-analysis'
@@ -44,6 +46,7 @@ class Store:
         self.next_id = 1
         self.picker = None          # フォルダーを選ぶ窓（app.py が pywebview の窓を渡す）
         self.lines = lines.Lines(self.home / 'lines.json')
+        self.formulas = formula.Formulas(self.home / 'channels.json')
 
     @property
     def cache(self):
@@ -119,9 +122,54 @@ class Store:
                     raise KeyError(f'{it["session"].title} に {p.get("lap")}周目が無い')
                 items.append({'key': f'{p["id"]}:{lap["lap"]}', 'label': f'{it["session"].title} {lap["lap"]}周',
                               'session': it['session'], 'lap': lap, 'sid': p['id']})
-        out = overlay.compare(items, channels, ref)
+        compiled = self.formulas.compiled()
+
+        def calc(s, rows, names):
+            return formula.compute(names, s.channels, s.t, rows, compiled)
+        out = overlay.compare(items, channels, ref, calc)
         for item, lap in zip(items, out['laps']):
             lap['video'] = lap_videos(item['sid'], item['session'], item['lap'])
+        return out
+
+    # 計算チャンネル
+    def channel_names(self):
+        """開いている走行の、元のチャンネルの名前"""
+        with self.lock:
+            return {c for it in self.items.values() for c in it['session'].channels}
+
+    def set_formula(self, action, name, unit=None, expr=None, old=None):
+        if action == 'save':
+            self.formulas.save(name, unit, expr, old, self.channel_names())
+        elif action == 'delete':
+            self.formulas.delete(name)
+        else:
+            raise formula.FormulaError('知らない頼み')
+        return self.formulas.list()
+
+    def check_formula(self, expr, name=None):
+        """式を確かめ、開いている走行で試しに計算する。{ok, error, pos, refs, missing, preview: {title, min, max, valid}}"""
+        try:
+            tree = formula.parse(expr)
+        except formula.FormulaError as e:
+            return {'ok': False, 'error': str(e), 'pos': e.pos}
+        compiled = {k: v for k, v in self.formulas.compiled().items() if k != name}
+        compiled['[check]'] = (tree, '')      # 計算チャンネルの名前に [ ] は使えないので、ぶつからない
+        names = sorted(formula.refs(tree))
+        known = self.channel_names() | set(compiled) | set(formula.CONSTS)
+        out = {'ok': True, 'refs': names, 'missing': [n for n in names if n not in known], 'preview': None}
+        with self.lock:
+            first = next(iter(self.items.values()), None)
+        if first is not None:
+            s = first['session']
+            vals, why = formula.compute(['[check]'], s.channels, s.t, slice(None), compiled)
+            if why:
+                out.update(ok=False, error=why['[check]'], pos=None)
+            else:
+                v = vals['[check]']
+                ok = np.isfinite(v)
+                out['preview'] = {'title': s.title, 'valid': round(float(ok.mean()), 3) if len(v) else 0,
+                                  'min': float(np.min(v[ok])) if ok.any() else None,
+                                  'max': float(np.max(v[ok])) if ok.any() else None}
         return out
 
     def media(self, sid, idx):
@@ -197,6 +245,11 @@ def lap_videos(sid, s, lap):
     return out
 
 
+def formula_help():
+    return {'funcs': [{'name': k, 'text': v[5]} for k, v in formula.FUNCS.items()],
+            'consts': [{'name': k, 'text': v[0]} for k, v in formula.CONSTS.items()]}
+
+
 def summary(sid, it):
     s = it['session']
     m = s.meta
@@ -265,6 +318,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': True, 'sessions': self.store.list()})
             if path == '/api/recent':
                 return self._json({'ok': True, 'recent': self.store.recent()})
+            if path == '/api/formulas':
+                return self._json({'ok': True, 'formulas': self.store.formulas.list(), 'help': formula_help()})
             return self._json({'ok': False, 'error': 'not found'}, 404)
         if not self._host_ok():
             return self._send(403, b'forbidden', 'text/plain; charset=utf-8')
@@ -364,6 +419,18 @@ class Handler(BaseHTTPRequestHandler):
             except lines.LineError as e:
                 return self._json({'ok': False, 'error': str(e)}, 400)
             return self._json({'ok': True, 'sessions': sessions})
+        if path == '/api/formulas/check':
+            expr = body.get('expr')
+            if not isinstance(expr, str):
+                return self._json({'ok': False, 'error': 'expr が無い'}, 400)
+            return self._json(self.store.check_formula(expr, body.get('name')))
+        if path.startswith('/api/formulas/'):
+            try:
+                items = self.store.set_formula(path.rsplit('/', 1)[1], body.get('name'), body.get('unit'),
+                                               body.get('expr'), body.get('old'))
+            except formula.FormulaError as e:
+                return self._json({'ok': False, 'error': str(e), 'pos': e.pos}, 400)
+            return self._json({'ok': True, 'formulas': items})
         if path == '/api/close':
             return self._json({'ok': self.store.close(body.get('id'))})
         if path == '/api/pick':

@@ -185,6 +185,30 @@ class ServerTest(unittest.TestCase):
         c.close()
         self.assertEqual(r.status, 403)
 
+    def test_formulas_api(self):
+        code, j = self.api('formulas')
+        self.assertEqual(code, 200)
+        self.assertIn('integ', [f['name'] for f in j['help']['funcs']])
+        sid = self.api('open', {'path': str(self.sample)})[1]['session']['id']
+        j = self.api('formulas/check', {'expr': 'Speed / 3.6'})[1]
+        self.assertTrue(j['ok'], j)
+        self.assertIsNotNone(j['preview'])
+        j = self.api('formulas/check', {'expr': '(Speed'})[1]
+        self.assertEqual((j['ok'], j['pos']), (False, 6))
+        code, j = self.api('formulas/save', {'name': 'ms', 'unit': 'm/s', 'expr': 'Speed / 3.6'})
+        self.assertEqual(code, 200, j)
+        self.assertEqual([x['name'] for x in j['formulas']], ['ms'])
+        code, j = self.api('formulas/save', {'name': 'x', 'expr': '1 +'})
+        self.assertEqual((code, j['pos']), (400, 3))
+        code, j = self.api('overlay', {'laps': [{'id': sid, 'lap': 1}], 'mode': 'app', 'channels': ['ms']})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(len(j['laps'][0]['channels']['ms']), len(j['laps'][0]['t']))
+        self.assertEqual(self.api('formulas/delete', {'name': 'ms'})[1]['formulas'], [])
+        self.assertEqual(self.api('formulas/delete', {'name': 'ms'})[0], 400)
+        self.assertEqual(self.api('formulas/rename', {'name': 'ms'})[0], 400)
+        self.assertEqual(self.request('/api/formulas/check', {'expr': '1'}, headers={})[0], 403)
+        self.api('close', {'id': sid})
+
     def test_open_errors(self):
         code, j = self.api('open', {'path': str(Path(self.tmp.name) / 'none.ecorun')})
         self.assertEqual(code, 400)

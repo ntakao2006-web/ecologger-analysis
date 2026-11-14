@@ -86,9 +86,11 @@ def _thin(n, limit=MAX_POINTS):
     return idx
 
 
-def compare(items, channels, ref=None):
+def compare(items, channels, ref=None, calc=None):
     """items：[{key, label, session, lap}]（lap は {start, end, time_s}）。ref：基準の周の番号（無ければ一番速い周）
-    返す値：{ref, ref_length_m, distance: 距離が使えるか, laps: [{key, label, time_s, t, s, channels, delta}], grid}"""
+    calc：計算チャンネル。calc(session, rows, names) → (値 名前→rows の行の配列, 計算できない理由 名前→文)。
+    周の行だけで計算する（積分は周の頭で0から）。
+    返す値：{ref, ref_length_m, distance: 距離が使えるか, laps: [{key, label, time_s, t, s, channels, calc_errors, delta}], grid}"""
     if not items:
         return {'ref': None, 'ref_length_m': None, 'distance': False, 'laps': [], 'grid': [], 'ref_t': [], 'origin': None}
     if ref is None or not 0 <= ref < len(items):
@@ -113,11 +115,17 @@ def compare(items, channels, ref=None):
         s_obj, lap = it['session'], it['lap']
         a, b = lap['start'], lap['end']
         m = (s_obj.t >= a) & (s_obj.t <= b)
-        idx = np.flatnonzero(m)[_thin(int(m.sum()))] if m.any() else np.array([], int)
+        k_rows = _thin(int(m.sum())) if m.any() else np.array([], int)
+        idx = np.flatnonzero(m)[k_rows]
         tt = s_obj.t[idx] - a
         row = {'key': it['key'], 'label': it['label'], 'time_s': lap['time_s'], 'ref': i == ref,
-               't': _nums(tt, 3), 's': None, 'delta': None, 'track': None,
+               't': _nums(tt, 3), 's': None, 'delta': None, 'track': None, 'calc_errors': {},
                'channels': {c: _nums(s_obj.channels[c][idx], 4) for c in channels if c in s_obj.channels}}
+        rest = [c for c in channels if c not in s_obj.channels]
+        if calc and rest and m.any():
+            vals, why = calc(s_obj, m, rest)
+            row['channels'].update({c: _nums(v[k_rows], 4) for c, v in vals.items()})
+            row['calc_errors'] = why
         if distance:
             ft = fs = None
             if i == ref:

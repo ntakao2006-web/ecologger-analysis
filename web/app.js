@@ -2,7 +2,7 @@
 'use strict';
 
 const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 'dist', channels: null, ref: '', colors: new Map(), req: 0,
-                overlay: null, refSession: null, draft: null };
+                overlay: null, refSession: null, draft: null, formulas: [], help: null, editing: null };
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
 const DEFAULT_CHANNELS = ['Speed', 'Throttle', 'RPM', 'LongAccel', 'LatAccel'];
 try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
@@ -181,6 +181,7 @@ function pickedLaps() {
 function channelMeta(picks) {
   const seen = new Map();
   for (const p of picks) for (const c of p.s.channels) if (!seen.has(c.name)) seen.set(c.name, c);
+  for (const f of state.formulas) if (!seen.has(f.name)) seen.set(f.name, { name: f.name, label: f.name, unit: f.unit, kind: 'number', calc: true, expr: f.expr });
   return seen;
 }
 
@@ -188,16 +189,29 @@ function renderChannelList(meta) {
   const box = $('chanlist');
   box.textContent = '';
   if (state.channels === null) state.channels = DEFAULT_CHANNELS.filter((n) => meta.has(n)).slice(0, 3);
-  for (const [name, c] of meta) {
+  const item = (name, c) => {
     const cb = el('input', { type: 'checkbox' });
     cb.checked = state.channels.includes(name);
     cb.onchange = () => {
-      state.channels = cb.checked ? [...state.channels, name] : state.channels.filter((n) => n !== name);
-      try { localStorage.setItem('channels', JSON.stringify(state.channels)); } catch (e) { /* 覚えなくてよい */ }
+      if (cb.checked && state.channels.length >= 12) { cb.checked = false; status('チャンネルは12までです', 'ng'); return; }
+      setChannels(cb.checked ? [...state.channels, name] : state.channels.filter((n) => n !== name));
       renderPicked();
     };
-    box.append(el('label', {}, cb, ` ${c.label || name}${c.unit ? `（${c.unit}）` : ''}`));
+    return el('label', {}, cb, ` ${c.label || name}${c.unit ? `（${c.unit}）` : ''}`);
+  };
+  for (const [name, c] of meta) if (!c.calc) box.append(item(name, c));
+  box.append(el('div', { class: 'calchead' }, '計算チャンネル'));
+  for (const [name, c] of meta) {
+    if (!c.calc) continue;
+    box.append(el('div', { class: 'calcrow', title: c.expr }, item(name, c),
+      el('button', { type: 'button', class: 'link', onclick: () => openCalc(name) }, '直す')));
   }
+  box.append(el('button', { type: 'button', class: 'link', onclick: () => openCalc(null) }, '＋ 計算チャンネルを作る'));
+}
+
+function setChannels(list) {
+  state.channels = list;
+  try { localStorage.setItem('channels', JSON.stringify(state.channels)); } catch (e) { /* 覚えなくてよい */ }
 }
 
 function renderRefList(picks) {
@@ -217,6 +231,9 @@ function renderLegend(data) {
       `${lap.label}　${lapTime(lap.time_s)}${lap.ref ? '（基準）' : ''}${!lap.ref && data.distance && !lap.delta ? '（測位が足りず距離で合わせられない）' : ''}`));
   }
   if (!data.distance) box.append(el('span', { class: 'note' }, '基準の周の測位が足りないので、横軸は時間だけです'));
+  const why = new Map();
+  for (const lap of data.laps) for (const [name, text] of Object.entries(lap.calc_errors || {})) if (!why.has(name)) why.set(name, text);
+  for (const [name, text] of why) box.append(el('span', { class: 'note warnnote' }, `計算チャンネル「${name}」を出せない周があります（${text}）`));
 }
 
 async function renderPicked() {
@@ -261,6 +278,123 @@ function showVideo(n) {
   $('videoEmpty').textContent = state.picked.size && !n
     ? '選んだ周に動画がありません（動画が入っているのは、書き出しのときに動画を添えた走行だけです）'
     : '選んだ周に動画があれば、ここに2周を上下に並べます。グラフやコース図のカーソルに合わせて動きます。';
+}
+
+// ---------------------------------------------------------------- 計算チャンネル
+let checkTimer = 0, checkReq = 0;
+
+async function loadFormulas() {
+  try {
+    const j = await api('formulas');
+    if (j.ok) { state.formulas = j.formulas; state.help = j.help; }
+  } catch (e) { /* 無くても動く */ }
+}
+
+function insertAtCursor(text) {
+  const ta = $('calcexpr');
+  const a = ta.selectionStart ?? ta.value.length, b = ta.selectionEnd ?? a;
+  ta.value = ta.value.slice(0, a) + text + ta.value.slice(b);
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = a + text.length;
+  scheduleCheck();
+}
+
+// 式に書くときの名前（記号や空白がある・関数と同じ名前なら [名前]）
+function refName(n) {
+  const fn = state.help && state.help.funcs.some((f) => f.name === n.toLowerCase());
+  return /^[^\W\d][\w.]*$/u.test(n) && !fn ? n : `[${n}]`;
+}
+
+function renderCalcHelp() {
+  const box = $('calchelp');
+  box.textContent = '';
+  const names = new Set();
+  for (const s of state.sessions) for (const c of s.channels) names.add(c.name);
+  for (const f of state.formulas) if (f.name !== state.editing) names.add(f.name);
+  const chips = (list) => el('div', { class: 'chips' }, ...list);
+  box.append(el('div', { class: 'helpsec' }, 'チャンネル'),
+    chips([...names].map((n) => el('button', { type: 'button', class: 'chip', onclick: () => insertAtCursor(refName(n)) }, n))));
+  if (state.help) {
+    box.append(el('div', { class: 'helpsec' }, '関数'),
+      chips(state.help.funcs.map((f) => el('button', { type: 'button', class: 'chip', title: f.text, onclick: () => insertAtCursor(f.name + '(') }, f.name))),
+      el('div', { class: 'helpsec' }, '定数'),
+      chips(state.help.consts.map((c) => el('button', { type: 'button', class: 'chip', title: c.text, onclick: () => insertAtCursor(c.name) }, c.name))));
+  }
+  box.append(el('p', { class: 'note' }, '四則 + - * / %（余り） ^（べき）、比較 < <= > >= == !=（成り立てば1）、and or not。記号や空白のある名前は [名前]。integ・deriv・smooth・time は周ごとに計算し、integ は周の頭で0から始まる。関数の上にマウスを置くと説明が出る'));
+}
+
+function openCalc(name) {
+  const f = state.formulas.find((x) => x.name === name);
+  state.editing = f ? f.name : null;
+  $('calctitle').textContent = f ? `計算チャンネル「${f.name}」を直す` : '計算チャンネルを作る';
+  $('calcname').value = f ? f.name : '';
+  $('calcunit').value = f ? f.unit : '';
+  $('calcexpr').value = f ? f.expr : '';
+  $('calcdel').hidden = !f;
+  $('calcmsg').textContent = ''; $('calcmsg').className = 'calcmsg';
+  renderCalcHelp();
+  $('calcdlg').showModal();
+  (f ? $('calcexpr') : $('calcname')).focus();
+  if (f) scheduleCheck();
+}
+
+function scheduleCheck() {
+  clearTimeout(checkTimer);
+  checkTimer = setTimeout(checkCalc, 250);
+}
+
+function fmtNum(v) { return v === null ? '—' : Math.abs(v) >= 1000 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(3); }
+
+async function checkCalc() {
+  const expr = $('calcexpr').value, msg = $('calcmsg');
+  if (!expr.trim()) { msg.textContent = ''; msg.className = 'calcmsg'; return; }
+  const req = ++checkReq;
+  let j;
+  try { j = await api('formulas/check', { expr, name: state.editing }); } catch (e) { return; }
+  if (req !== checkReq) return;
+  if (!j.ok) {
+    const has = j.pos !== null && j.pos !== undefined;
+    msg.textContent = (has ? `${j.pos + 1}文字目：` : '') + j.error;
+    msg.className = 'calcmsg ng';
+    return;
+  }
+  const p = j.preview;
+  msg.className = 'calcmsg ok';
+  msg.textContent = p
+    ? `読めました。試しに「${p.title}」の全体で計算：${fmtNum(p.min)} 〜 ${fmtNum(p.max)}（値のある所 ${Math.round(p.valid * 100)}%）`
+    : '読めました（走行を開くと、試しに計算した値の幅を出します）';
+}
+
+async function saveCalc() {
+  const name = $('calcname').value.trim(), old = state.editing;
+  if (!name) { $('calcmsg').textContent = '名前を入れてください'; $('calcmsg').className = 'calcmsg ng'; return; }
+  let j;
+  try { j = await api('formulas/save', { name, unit: $('calcunit').value, expr: $('calcexpr').value, old }); }
+  catch (e) { status('裏の処理とつながっていません', 'ng'); return; }
+  if (!j.ok) {
+    const has = j.pos !== null && j.pos !== undefined;
+    $('calcmsg').textContent = (has ? `${j.pos + 1}文字目：` : '') + j.error; $('calcmsg').className = 'calcmsg ng'; return;
+  }
+  state.formulas = j.formulas;
+  let list = (state.channels || []).map((n) => (n === old ? name : n));
+  if (!list.includes(name) && list.length < 12) list = [...list, name];     // 作った計算チャンネルはすぐ出す
+  setChannels(list);
+  $('calcdlg').close();
+  status(`計算チャンネル「${name}」を残しました`, 'ok');
+  renderPicked();
+}
+
+async function deleteCalc() {
+  const name = state.editing;
+  if (!name || !confirm(`計算チャンネル「${name}」を消しますか？`)) return;
+  let j;
+  try { j = await api('formulas/delete', { name }); } catch (e) { status('裏の処理とつながっていません', 'ng'); return; }
+  if (!j.ok) { $('calcmsg').textContent = j.error; $('calcmsg').className = 'calcmsg ng'; return; }
+  state.formulas = j.formulas;
+  setChannels((state.channels || []).filter((n) => n !== name));
+  $('calcdlg').close();
+  status(`計算チャンネル「${name}」を消しました`, 'ok');
+  renderPicked();
 }
 
 // ---------------------------------------------------------------- コースの線の版
@@ -381,6 +515,7 @@ async function start() {
   try {
     const j = await api('health');
     status(`準備できました（v${j.version}）`, 'ok');
+    await loadFormulas();
     const s = await api('sessions');
     state.sessions = s.sessions || [];
     render();
@@ -408,6 +543,11 @@ VideoPane.init($('vbox'), {
   onPlayState: (on) => { $('vplay').textContent = on ? '⏸ 止める' : '▶ 再生'; },
 });
 $('vplay').onclick = () => VideoPane.toggle();
+$('calcexpr').oninput = scheduleCheck;
+$('calcsave').onclick = saveCalc;
+$('calcdel').onclick = deleteCalc;
+$('calccancel').onclick = () => $('calcdlg').close();
+$('calcexpr').onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveCalc(); } };
 $('vrate').onchange = (e) => VideoPane.setRate(+e.target.value);
 $('linesel').onchange = (e) => { const s = state.refSession; if (s) lineRequest('use', { course: s.course, name: e.target.value || null }); };
 $('editline').onclick = startEdit;

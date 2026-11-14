@@ -72,6 +72,23 @@
     <div id="vbox" class="vbox" hidden></div>
   </section>
 </main>
+<dialog id="calcdlg" class="calcdlg" aria-labelledby="calctitle">
+  <h3 id="calctitle">計算チャンネルを作る</h3>
+  <div class="row">
+    <label>名前 <input id="calcname" type="text" maxlength="40" placeholder="例：速さ m/s"></label>
+    <label>単位 <input id="calcunit" type="text" maxlength="20" class="unit" placeholder="例：m/s"></label>
+  </div>
+  <label class="exprlab">式
+    <textarea id="calcexpr" rows="3" spellcheck="false" placeholder="例：Speed / 3.6　　integ(Speed / 3.6)　　if(Throttle > 95, 1, 0)"></textarea></label>
+  <p id="calcmsg" class="calcmsg"></p>
+  <details class="calchelp" open><summary>使えるもの（押すと式に入る）</summary><div id="calchelp"></div></details>
+  <div class="row end">
+    <button id="calcdel" type="button" hidden>この計算チャンネルを消す</button>
+    <span class="grow"></span>
+    <button id="calccancel" type="button">やめる</button>
+    <button id="calcsave" type="button" class="primary">残す</button>
+  </div>
+</dialog>
 <script src="chart.js"></script>
 <script src="map.js"></script>
 <script src="video.js"></script>

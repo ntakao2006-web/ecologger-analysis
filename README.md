@@ -38,6 +38,7 @@ python -m venv .venv
 - `ecoanalysis/laps.py`：コースの線で、測位から周を切り直す（線を越えた時刻＝線の手前と先の2点から補った値）。ロガーが数えた周と並べて出す
 - `ecoanalysis/overlay.py`：選んだ周を重ねる。距離は基準の周の走った線に沿った距離で、ほかの周は測位の点を基準の線へ投影して合わせる（同じ場所どうしが並び、タイムの差は「同じ場所に何秒遅れて着いたか」）
 - `ecoanalysis/lines.py`：コースの線の版（名前つき）を `~/.ecologger-analysis/lines.json` に残す。版を使うと、同じコースの走行は全部その線で周を切り直す
+- `ecoanalysis/formula.py`：計算チャンネル。式（四則・比較・論理・if・関数・積分・変化率・平均）を自前で字句に分けて木にし、自前で計算する（Pythonの`eval`は使わない）。残し場所は `~/.ecologger-analysis/channels.json`。重ね合わせでは周ごとに計算する（積分は周の頭で0から）
 - `ecoanalysis/sample.py`：作りものの走行データを書く
 - `web/`：画面（HTML・CSS・JavaScript）。グラフとコース図は自前の canvas（`web/chart.js`・`web/map.js`）で、外のライブラリを使わない
 - `web/video.js`：動画。2周を上下に並べ、止まっているときはカーソルの所へ2本とも動かす。再生すると上の動画からカーソルを動かし、下の動画は同じ所（距離の横軸なら同じ地点）を速さを少し変えて追う。動画の秒は書き出しの対応表（sync）から補って出す
