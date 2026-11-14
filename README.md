@@ -13,7 +13,7 @@
 
 ## 使う人へ（配る形）
 
-1. `EcoLogger-Analysis-<版>-win64.zip` を広げる。EcoLogger アプリ（ロガーのPCの道具）から開くなら、
+1. [Releases](https://github.com/ntakao2006-web/ecologger-analysis/releases) から `EcoLogger-Analysis-<版>-win64.zip` を落として広げる。EcoLogger アプリ（ロガーのPCの道具）から開くなら、
    `%USERPROFILE%\.ecologger\` に広げる（`%USERPROFILE%\.ecologger\EcoLogger-Analysis\EcoLogger-Analysis.exe` になる）
 2. `EcoLogger-Analysis.exe` を開く。走行のフォルダー（`.ecorun`）を exe に落とすか、引数に渡しても開く
 - **もう開いているときに別の走行を渡すと、開いている窓のほうで開いて前に出る**（窓は増えない）。
