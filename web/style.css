@@ -80,3 +80,13 @@ select { max-width: 260px; }
 .plothead { position: absolute; left: 52px; top: 2px; right: 10px; display: flex; gap: 10px; font-size: 11px; pointer-events: none; white-space: nowrap; overflow: hidden; }
 .pname { color: var(--muted); font-weight: 600; }
 .pval { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; color: var(--text); }
+.map { display: flex; flex-direction: column; }
+.mapcv { flex: 1; min-height: 0; width: 100%; display: block; cursor: pointer; }
+.map.editing .mapcv { cursor: crosshair; }
+.lineedit { border: 1px solid var(--accent); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; font-size: 12px; }
+.lineedit .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lineedit .note { margin: 4px 0; }
+.lineedit input[type=number] { width: 64px; }
+.lineedit input, .lineedit select { font: inherit; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); }
+.lineedit input[type=text] { flex: 1; min-width: 140px; }
+.lineedit button, .map .gbar button { font-size: 12px; padding: 2px 8px; }

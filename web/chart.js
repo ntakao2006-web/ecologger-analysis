@@ -5,7 +5,7 @@
 
 const Chart = (() => {
   const PAD_L = 52, PAD_R = 10, PAD_T = 22, PAD_B = 4, AXIS_H = 22;
-  let root = null, data = null, opts = null, view = null, viewX = null, cursorX = null, panels = [], drag = null;
+  let root = null, data = null, opts = null, view = null, viewX = null, cursorX = null, pinned = null, panels = [], drag = null;
 
   window.addEventListener('mouseup', () => { drag = null; });
 
@@ -207,15 +207,23 @@ const Chart = (() => {
     cv.addEventListener('mousemove', (e) => {
       const r = cv.getBoundingClientRect(), x = xval(e.clientX - r.left, r.width);
       if (drag) {
-        const dx = (e.clientX - drag.px) / (r.width - PAD_L - PAD_R) * (drag.view[1] - drag.view[0]);
+        if (Math.abs(e.clientX - drag.px) < 3) return;
+      const dx = (e.clientX - drag.px) / (r.width - PAD_L - PAD_R) * (drag.view[1] - drag.view[0]);
         setView(drag.view[0] - dx, drag.view[1] - dx);
         return;
       }
       cursorX = x; draw();
       if (opts.onCursor) opts.onCursor(cursorX);
     });
-    cv.addEventListener('mouseleave', () => { drag = null; cursorX = null; draw(); if (opts.onCursor) opts.onCursor(null); });
+    cv.addEventListener('mouseleave', () => { drag = null; cursorX = pinned; draw(); if (opts.onCursor) opts.onCursor(cursorX); });
     cv.addEventListener('mousedown', (e) => { drag = { px: e.clientX, view: view.slice() }; e.preventDefault(); });
+    cv.addEventListener('mouseup', (e) => {     // 動かさずに離したら、その所にカーソルを留める
+      if (drag && Math.abs(e.clientX - drag.px) < 3) {
+        const r = cv.getBoundingClientRect();
+        pinned = cursorX = xval(e.clientX - r.left, r.width); draw();
+        if (opts.onCursor) opts.onCursor(cursorX);
+      }
+    });
     cv.addEventListener('wheel', (e) => {
       e.preventDefault();
       const r = cv.getBoundingClientRect(), x = xval(e.clientX - r.left, r.width);
@@ -240,11 +248,18 @@ const Chart = (() => {
       buildPanels(); layout();
       const full = fullRange();
       view = keepView && view && viewX === o.x && view[1] <= full[1] * 1.001 ? view : full;
-      if (viewX !== o.x) cursorX = null;
+      if (viewX !== o.x) cursorX = pinned = null;
       viewX = o.x;
       draw();
     },
     redraw() { if (data && root) { layout(); draw(); } },
+    // 外（コース図）からカーソルを留める。見えている範囲の外なら、そこが真ん中に来るように動かす
+    pin(x) {
+      if (!data) return;
+      pinned = cursorX = x;
+      if (x < view[0] || x > view[1]) { const span = view[1] - view[0]; setView(x - span / 2, x + span / 2); } else draw();
+    },
+    cursor() { return cursorX; },
     clear() { data = null; panels = []; if (root) root.textContent = ''; },
   };
 })();

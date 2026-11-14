@@ -41,8 +41,24 @@
     <div id="plots" class="plots"></div>
   </section>
   <section class="pane map">
-    <h2>コース図</h2>
-    <p class="empty">周の線とカーソル。</p>
+    <div class="gbar">
+      <h2>コース図</h2>
+      <label class="refpick">線 <select id="linesel" disabled></select></label>
+      <button id="editline" type="button" disabled>線を直す</button>
+      <button id="delline" type="button" hidden>この版を消す</button>
+    </div>
+    <div id="lineedit" class="lineedit" hidden>
+      <div class="row">直す線 <select id="linetarget"></select>
+        幅 <input id="linewidth" type="number" min="5" max="300" step="1"> m
+        <button id="addsector" type="button">セクターの線を足す</button>
+        <button id="delsector" type="button">この線を消す</button></div>
+      <p class="note">図を押すと、選んだ線をそこへ置きます（向きは基準の周の走る向き）。周は残したときに切り直します。</p>
+      <div class="row"><input id="linename" type="text" maxlength="40" placeholder="版の名前（例：公式の計測線）">
+        <button id="saveline" type="button">名前をつけて残す</button>
+        <button id="cancelline" type="button">やめる</button></div>
+    </div>
+    <p id="mapEmpty" class="empty">周を選ぶと、走った線を描きます。図を押すと、グラフのカーソルがその場所へ動きます。</p>
+    <canvas id="mapcv" class="mapcv"></canvas>
   </section>
   <section class="pane video">
     <h2>動画</h2>
@@ -50,6 +66,7 @@
   </section>
 </main>
 <script src="chart.js"></script>
+<script src="map.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

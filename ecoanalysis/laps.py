@@ -100,24 +100,32 @@ def cut(gnss, line, sectors=(), logger_laps=()):
     return laps
 
 
-def _number(laps, logger_laps):
-    used = set()
+def _closest(laps, logger_laps, limit):
+    """周ごとに、終わりがいちばん近いロガーの周（limit(周) 秒以内、1対1）。{周の位置: ロガーの周}"""
+    pairs = []
     for i, x in enumerate(laps):
-        best = None
         for k, g in enumerate(logger_laps):
-            if k in used or not isinstance(g, dict) or not isinstance(g.get('end'), (int, float)):
-                continue
-            if abs(g['end'] - x['end']) <= MATCH_S and (best is None or abs(g['end'] - x['end']) < abs(logger_laps[best]['end'] - x['end'])):
-                best = k
-        if best is not None:
-            used.add(best)
-            g = logger_laps[best]
-            x['logger'] = {'lap': g['lap'], 'time_s': g['time_s'], 'diff_ms': round((x['time_s'] - g['time_s']) * 1000, 1)}
-    # 番号：ロガーの周と同じなら同じ番号。それ以外は、いちばん近い番号つきの周から数える
-    anchors = [(i, x['logger']['lap'] - i) for i, x in enumerate(laps) if x['logger']]
+            if isinstance(g, dict) and isinstance(g.get('end'), (int, float)) and abs(g['end'] - x['end']) <= limit(x):
+                pairs.append((abs(g['end'] - x['end']), i, k))
+    out, used = {}, set()
+    for _, i, k in sorted(pairs):
+        if i not in out and k not in used:
+            out[i] = logger_laps[k]
+            used.add(k)
+    return out
+
+
+def _number(laps, logger_laps):
+    # ロガーと比べるのは、終わりが MATCH_S 以内で合う周だけ（同じ線で数えた同じ周）
+    for i, g in _closest(laps, logger_laps, lambda x: MATCH_S).items():
+        laps[i]['logger'] = {'lap': g['lap'], 'time_s': g['time_s'], 'diff_ms': round((laps[i]['time_s'] - g['time_s']) * 1000, 1)}
+    # 番号は、終わりが周のタイムの半分以内のロガーの周から取る（線を動かしても番号が変わらないように）。
+    # それも無い周は、いちばん近い番号つきの周から数える
+    near = _closest(laps, logger_laps, lambda x: x['time_s'] / 2)
+    anchors = [(i, g['lap'] - i) for i, g in near.items()]
     for i, x in enumerate(laps):
-        if x['logger']:
-            x['lap'] = x['logger']['lap']
+        if i in near:
+            x['lap'] = near[i]['lap']
         elif anchors:
             j, off = min(anchors, key=lambda a: abs(a[0] - i))
             x['lap'] = i + off
@@ -125,12 +133,13 @@ def _number(laps, logger_laps):
             x['lap'] = i + 1
 
 
-def for_session(s, line=None):
-    """走行の周をコースの線で切る。(周の一覧, 使った線, 切れなかった理由)"""
+def for_session(s, line=None, sectors=None):
+    """走行の周をコースの線で切る。line・sectors を渡さなければ書き出しに入っている線。(周の一覧, 使った線, 切れなかった理由)"""
     course = s.meta.get('course') or {}
     line = line or course.get('line')
+    sectors = course.get('sectors') or [] if sectors is None else sectors
     if s.gnss is None:
         return None, None, '測位が入っていない'
     if not valid_line(line):
         return None, None, 'コースの線が入っていない'
-    return cut(s.gnss, line, course.get('sectors') or [], s.laps), line, None
+    return cut(s.gnss, line, sectors, s.laps), line, None

@@ -11,6 +11,7 @@ import numpy as np
 
 EARTH_M_PER_DEG = 111320.0
 MAX_POINTS = 6000         # 1周に送る点の数の上限（多ければ間引く）
+MAX_TRACK = 3000          # コース図に送る測位の点の数の上限
 GRID_M = 2.0              # タイムの差を出す距離の刻み
 SEARCH_BACK, SEARCH_AHEAD = 5, 60   # 投影で探す基準の線の区間（直前に合った区間からの数）
 
@@ -89,7 +90,7 @@ def compare(items, channels, ref=None):
     """items：[{key, label, session, lap}]（lap は {start, end, time_s}）。ref：基準の周の番号（無ければ一番速い周）
     返す値：{ref, ref_length_m, distance: 距離が使えるか, laps: [{key, label, time_s, t, s, channels, delta}], grid}"""
     if not items:
-        return {'ref': None, 'ref_length_m': None, 'distance': False, 'laps': [], 'grid': []}
+        return {'ref': None, 'ref_length_m': None, 'distance': False, 'laps': [], 'grid': [], 'ref_t': [], 'origin': None}
     if ref is None or not 0 <= ref < len(items):
         ref = min(range(len(items)), key=lambda i: items[i]['lap']['time_s'])
     r = items[ref]
@@ -115,20 +116,23 @@ def compare(items, channels, ref=None):
         idx = np.flatnonzero(m)[_thin(int(m.sum()))] if m.any() else np.array([], int)
         tt = s_obj.t[idx] - a
         row = {'key': it['key'], 'label': it['label'], 'time_s': lap['time_s'], 'ref': i == ref,
-               't': _nums(tt, 3), 's': None, 'delta': None,
+               't': _nums(tt, 3), 's': None, 'delta': None, 'track': None,
                'channels': {c: _nums(s_obj.channels[c][idx], 4) for c in channels if c in s_obj.channels}}
         if distance:
             ft = fs = None
             if i == ref:
-                ft, fs = rt, rs
+                ft, fx, fy, fs = rt, rx, ry, rs
             else:
                 tr = track(s_obj.gnss, a, b, origin)
                 if tr is not None:
                     ft, fx, fy = tr
                     fs = _monotone(project(rx, ry, rs, fx, fy), length)
             if fs is not None:
+                k = _thin(len(ft), MAX_TRACK)      # コース図の線（基準の周の頭の位置を原点にした m）
+                row['track'] = {'t': _nums(ft[k], 3), 's': _nums(fs[k], 1), 'x': _nums(fx[k], 2), 'y': _nums(fy[k], 2)}
                 row['s'] = _nums(np.interp(tt, ft, fs), 1)
                 row['delta'] = _nums(np.interp(grid, _strict(fs), ft) - ref_t_at, 3)
         out.append(row)
     return {'ref': ref, 'ref_length_m': round(length, 1) if distance else None, 'distance': distance, 'laps': out,
+            'origin': list(origin) if distance else None,
             'grid': _nums(grid, 1) if distance else [], 'ref_t': _nums(ref_t_at, 3) if distance else []}

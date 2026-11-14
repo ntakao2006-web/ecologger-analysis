@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import __version__, laps, overlay, session
+from . import __version__, laps, lines, overlay, session
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 HOME = Path.home() / '.ecologger-analysis'
@@ -37,6 +37,7 @@ class Store:
         self.items = {}
         self.next_id = 1
         self.picker = None          # フォルダーを選ぶ窓（app.py が pywebview の窓を渡す）
+        self.lines = lines.Lines(self.home / 'lines.json')
 
     @property
     def cache(self):
@@ -53,15 +54,45 @@ class Store:
                     return summary(sid, it)
         t = time.perf_counter()
         s = session.load(path, self.cache)
-        app_laps, line, why = laps.for_session(s)
-        it = {'key': key, 'session': s, 'laps': app_laps, 'line': line, 'why': why,
-              'load_s': round(time.perf_counter() - t, 2)}
+        it = {'key': key, 'session': s, 'load_s': None}
+        self._cut(it)
+        it['load_s'] = round(time.perf_counter() - t, 2)
         with self.lock:
             sid = f's{self.next_id}'
             self.next_id += 1
             self.items[sid] = it
         self.remember(key)
         return summary(sid, it)
+
+    def _cut(self, it):
+        """そのコースで使っている線の版（無ければ書き出しの線）で周を切る"""
+        s = it['session']
+        course = (s.meta.get('course') or {}).get('name')
+        act = self.lines.active(course) if course else None
+        it['line_names'] = self.lines.names(course) if course else []
+        if act:
+            name, line, sectors = act
+            it['laps'], it['line'], it['why'] = laps.for_session(s, line, sectors)
+            it['sectors'], it['line_name'] = sectors, name
+        else:
+            it['laps'], it['line'], it['why'] = laps.for_session(s)
+            it['sectors'], it['line_name'] = (s.meta.get('course') or {}).get('sectors') or [], None
+
+    def set_lines(self, action, course, name=None, line=None, sectors=None):
+        """線の版を残す（save）・使う（use、name=None なら書き出しの線）・消す（delete）。同じコースの走行の周を切り直す"""
+        if action == 'save':
+            self.lines.save(course, name, line, sectors)
+        elif action == 'use':
+            self.lines.use(course, name)
+        elif action == 'delete':
+            self.lines.delete(course, name)
+        else:
+            raise lines.LineError('知らない頼み')
+        with self.lock:
+            for it in self.items.values():
+                if (it['session'].meta.get('course') or {}).get('name') == course:
+                    self._cut(it)
+        return self.list()
 
     def close(self, sid):
         with self.lock:
@@ -132,8 +163,10 @@ def summary(sid, it):
     g = s.gnss
     return {
         'id': sid, 'path': it['key'], 'title': s.title, 't0_utc': m['t0_utc'], 'duration_s': m['duration_s'],
-        'clock': m['clock'], 'course': course.get('name'), 'line': it['line'],
-        'sector_count': len(course.get('sectors') or []),
+        'clock': m['clock'], 'course': course.get('name'), 'line': it['line'], 'sectors': it['sectors'],
+        'line_name': it['line_name'], 'export_line': {'line': course.get('line'), 'sectors': course.get('sectors') or []},
+        'line_names': it['line_names'],
+        'sector_count': len(it['sectors']),
         'channels': m['channels'], 'rows': int(len(s.t)), 'rate_hz': m.get('rate_hz'),
         'gnss': None if g is None else {**(m.get('gnss') or {}), 'points': int(len(g['t']))},
         'videos': len(s.videos), 'notes': m.get('notes') or [], 'load_s': it['load_s'],
@@ -231,6 +264,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': True, **self.store.overlay(picks[:12], body.get('mode', 'app'), chans[:12], ref)})
             except KeyError as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
+        if path.startswith('/api/lines/'):
+            try:
+                sessions = self.store.set_lines(path.rsplit('/', 1)[1], body.get('course'), body.get('name'),
+                                                body.get('line'), body.get('sectors'))
+            except lines.LineError as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
+            return self._json({'ok': True, 'sessions': sessions})
         if path == '/api/close':
             return self._json({'ok': self.store.close(body.get('id'))})
         if path == '/api/pick':
