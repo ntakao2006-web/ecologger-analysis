@@ -102,6 +102,20 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.api('sessions')[1]['sessions'], [])
         self.assertTrue(any((self.home / 'cache').glob('*.npz')))   # 読んだ表を覚えた
 
+    def test_overlay(self):
+        sid = self.api('open', {'path': str(self.sample)})[1]['session']['id']
+        code, j = self.api('overlay', {'laps': [{'id': sid, 'lap': 1}, {'id': sid, 'lap': 2}], 'mode': 'app',
+                                       'channels': ['Speed', 'RPM']})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(j['ref'], 1)
+        self.assertEqual([x['key'] for x in j['laps']], [f'{sid}:1', f'{sid}:2'])
+        self.assertAlmostEqual(j['laps'][0]['delta'][-1], 1.5, delta=0.01)    # 62.0 − 60.5 秒
+        code, j = self.api('overlay', {'laps': [{'id': sid, 'lap': 9}], 'channels': []})
+        self.assertEqual(code, 400)
+        self.assertIn('9周目が無い', j['error'])
+        self.assertEqual(self.api('overlay', {'laps': 'x'})[0], 400)
+        self.api('close', {'id': sid})
+
     def test_open_errors(self):
         code, j = self.api('open', {'path': str(Path(self.tmp.name) / 'none.ecorun')})
         self.assertEqual(code, 400)

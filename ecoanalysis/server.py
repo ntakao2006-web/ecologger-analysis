@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import __version__, laps, session
+from . import __version__, laps, overlay, session
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 HOME = Path.home() / '.ecologger-analysis'
@@ -66,6 +66,23 @@ class Store:
     def close(self, sid):
         with self.lock:
             return self.items.pop(sid, None) is not None
+
+    def overlay(self, picks, mode, channels, ref=None):
+        """picks：[{id, lap}]。mode：'app'（コースの線で切った周）か 'logger'。周が見つからなければ KeyError"""
+        items = []
+        with self.lock:
+            for p in picks:
+                it = self.items.get(p.get('id')) if isinstance(p, dict) else None
+                if it is None:
+                    raise KeyError(f'開いていない走行：{p!r}'[:200])
+                use_app = mode == 'app' and it['laps'] is not None
+                pool = it['laps'] if use_app else it['session'].laps
+                lap = next((x for x in pool if x['lap'] == p.get('lap')), None)
+                if lap is None:
+                    raise KeyError(f'{it["session"].title} に {p.get("lap")}周目が無い')
+                items.append({'key': f'{p["id"]}:{lap["lap"]}', 'label': f'{it["session"].title} {lap["lap"]}周',
+                              'session': it['session'], 'lap': lap})
+        return overlay.compare(items, channels, ref)
 
     def list(self):
         with self.lock:
@@ -206,6 +223,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': False, 'error': '走行データを開けません', 'problems': e.problems}, 400)
             except OSError as e:
                 return self._json({'ok': False, 'error': f'開けません（{e}）'}, 400)
+        if path == '/api/overlay':
+            picks, chans, ref = body.get('laps'), body.get('channels') or [], body.get('ref')
+            if not isinstance(picks, list) or not all(isinstance(c, str) for c in chans) or not (ref is None or isinstance(ref, int)):
+                return self._json({'ok': False, 'error': 'laps・channels・ref の形が違う'}, 400)
+            try:
+                return self._json({'ok': True, **self.store.overlay(picks[:12], body.get('mode', 'app'), chans[:12], ref)})
+            except KeyError as e:
+                return self._json({'ok': False, 'error': str(e.args[0])}, 400)
         if path == '/api/close':
             return self._json({'ok': self.store.close(body.get('id'))})
         if path == '/api/pick':

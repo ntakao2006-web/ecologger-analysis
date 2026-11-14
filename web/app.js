@@ -1,7 +1,10 @@
 // 画面の入口。裏（Python）とは /api/ のHTTPだけでやりとりする（pywebview の独自の呼び出しは使わない）
 'use strict';
 
-const state = { sessions: [], mode: 'app', picked: new Set() };
+const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', channels: null, ref: '', colors: new Map(), req: 0 };
+const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
+const DEFAULT_CHANNELS = ['Speed', 'Throttle', 'RPM', 'LongAccel', 'LatAccel'];
+try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
 const $ = (id) => document.getElementById(id);
 
 async function api(path, body) {
@@ -113,7 +116,11 @@ function sessionBlock(s, best) {
     const key = `${s.id}:${x.lap}`;
     const cb = el('input', { type: 'checkbox', 'aria-label': `${x.lap}周目を選ぶ` });
     cb.checked = state.picked.has(key);
-    cb.onchange = () => { if (cb.checked) state.picked.add(key); else state.picked.delete(key); renderPicked(); };
+    cb.onchange = () => {
+      if (cb.checked && state.picked.size >= MAX_PICK) { cb.checked = false; status(`重ねられるのは${MAX_PICK}周までです`, 'ng'); return; }
+      if (cb.checked) state.picked.add(key); else { state.picked.delete(key); state.colors.delete(key); }
+      renderPicked();
+    };
     const isBest = best && !x.gap && Math.abs(x.time_s - best.lap) < 0.0005;
     const row = el('tr', { class: isBest ? 'best' : '' },
       el('td', {}, cb),
@@ -145,12 +152,90 @@ function sessionBlock(s, best) {
   return block;
 }
 
-function renderPicked() {
-  const names = [];
-  for (const s of state.sessions) {
-    for (const x of lapsOf(s)) if (state.picked.has(`${s.id}:${x.lap}`)) names.push(`${s.title} ${x.lap}周（${lapTime(x.time_s)}）`);
+// ---------------------------------------------------------------- 重ね合わせ
+function colorFor(key) {
+  if (!state.colors.has(key)) {
+    const used = new Set(state.colors.values());
+    let slot = 1;
+    while (used.has(slot) && slot < MAX_PICK) slot++;
+    state.colors.set(key, slot);
   }
-  $('picked').textContent = names.length ? '選んだ周：' + names.join('、') : '';
+  return getComputedStyle(document.body).getPropertyValue('--s' + state.colors.get(key)).trim();
+}
+
+// 選んだ周（選んだ順）。いまの切り方に無い周は外す
+function pickedLaps() {
+  const out = [];
+  for (const key of state.picked) {
+    const [id, n] = key.split(':');
+    const s = state.sessions.find((x) => x.id === id);
+    const lap = s && lapsOf(s).find((x) => String(x.lap) === n);
+    if (lap) out.push({ key, id, lap: lap.lap, s, time_s: lap.time_s });
+  }
+  return out;
+}
+
+function channelMeta(picks) {
+  const seen = new Map();
+  for (const p of picks) for (const c of p.s.channels) if (!seen.has(c.name)) seen.set(c.name, c);
+  return seen;
+}
+
+function renderChannelList(meta) {
+  const box = $('chanlist');
+  box.textContent = '';
+  if (state.channels === null) state.channels = DEFAULT_CHANNELS.filter((n) => meta.has(n)).slice(0, 3);
+  for (const [name, c] of meta) {
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = state.channels.includes(name);
+    cb.onchange = () => {
+      state.channels = cb.checked ? [...state.channels, name] : state.channels.filter((n) => n !== name);
+      try { localStorage.setItem('channels', JSON.stringify(state.channels)); } catch (e) { /* 覚えなくてよい */ }
+      renderPicked();
+    };
+    box.append(el('label', {}, cb, ` ${c.label || name}${c.unit ? `（${c.unit}）` : ''}`));
+  }
+}
+
+function renderRefList(picks) {
+  const sel = $('refsel');
+  sel.textContent = '';
+  sel.append(el('option', { value: '' }, '一番速い周'));
+  for (const p of picks) sel.append(el('option', { value: p.key }, `${p.s.title} ${p.lap}周（${lapTime(p.time_s)}）`));
+  if (!picks.some((p) => p.key === state.ref)) state.ref = '';
+  sel.value = state.ref;
+}
+
+function renderLegend(data) {
+  const box = $('legend');
+  box.textContent = '';
+  for (const lap of data.laps) {
+    box.append(el('span', { class: 'lg' + (lap.ref ? ' ref' : '') }, el('i', { style: `background:${colorFor(lap.key)}` }),
+      `${lap.label}　${lapTime(lap.time_s)}${lap.ref ? '（基準）' : ''}${!lap.ref && data.distance && !lap.delta ? '（測位が足りず距離で合わせられない）' : ''}`));
+  }
+  if (!data.distance) box.append(el('span', { class: 'note' }, '基準の周の測位が足りないので、横軸は時間だけです'));
+}
+
+async function renderPicked() {
+  const picks = pickedLaps();
+  const empty = !picks.length;
+  $('graphEmpty').hidden = !empty;
+  if (empty) { Chart.clear(); $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; return; }
+  const meta = channelMeta(picks);
+  renderChannelList(meta);
+  renderRefList(picks);
+  const ref = state.ref ? picks.findIndex((p) => p.key === state.ref) : null;
+  const req = ++state.req;
+  let j;
+  try {
+    j = await api('overlay', { laps: picks.map((p) => ({ id: p.id, lap: p.lap })), mode: state.mode,
+                               channels: state.channels.filter((n) => meta.has(n)), ref: ref === null || ref < 0 ? null : ref });
+  } catch (e) { status('裏の処理とつながっていません', 'ng'); return; }
+  if (req !== state.req) return;                  // 新しい頼みが後から出ている
+  if (!j.ok) { status(j.error, 'ng'); return; }
+  const x = j.distance ? state.xaxis : 'time';
+  renderLegend(j);
+  Chart.show($('plots'), j, { x, channels: state.channels.filter((n) => meta.has(n)).map((n) => meta.get(n)), color: colorFor }, true);
 }
 
 // ---------------------------------------------------------------- 開く・閉じる
@@ -185,7 +270,7 @@ async function pickAndOpen() {
 async function closeSession(id) {
   try { await api('close', { id }); } catch (e) { /* 画面からは消す */ }
   state.sessions = state.sessions.filter((s) => s.id !== id);
-  for (const k of [...state.picked]) if (k.startsWith(id + ':')) state.picked.delete(k);
+  for (const k of [...state.picked]) if (k.startsWith(id + ':')) { state.picked.delete(k); state.colors.delete(k); }
   render();
 }
 
@@ -215,4 +300,7 @@ async function start() {
 $('open').onclick = pickAndOpen;
 $('recent').onchange = (e) => { const p = e.target.value; e.target.value = ''; if (p) openPath(p); };
 for (const r of document.querySelectorAll('input[name=mode]')) r.onchange = () => { state.mode = r.value; render(); };
+for (const r of document.querySelectorAll('input[name=xaxis]')) r.onchange = () => { state.xaxis = r.value; renderPicked(); };
+$('refsel').onchange = (e) => { state.ref = e.target.value; renderPicked(); };
+new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 start();

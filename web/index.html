@@ -25,9 +25,20 @@
     <div id="sessions"><p class="empty">「走行を開く…」で、走行のフォルダー（名前が .ecorun で終わるもの）を選びます。別の日の走行も続けて開けます。</p></div>
   </section>
   <section class="pane graph">
-    <h2>グラフ</h2>
-    <p class="empty">選んだ周の重ね合わせ（時間・距離）とタイムの差。</p>
-    <p id="picked" class="picked"></p>
+    <div class="gbar">
+      <h2>グラフ</h2>
+      <div class="seg" role="radiogroup" aria-label="横軸">
+        <label title="基準の周の走った線に沿った距離。ほかの周は位置で合わせる"><input type="radio" name="xaxis" value="dist" checked>距離</label>
+        <label title="周の頭からの時間"><input type="radio" name="xaxis" value="time">時間</label>
+      </div>
+      <details class="chanpick"><summary>チャンネル</summary><div id="chanlist" class="chanlist"></div></details>
+      <label class="refpick">基準 <select id="refsel"></select></label>
+      <span class="grow"></span>
+      <span class="hint">ホイールで拡大・ドラッグで移動・ダブルクリックで全体</span>
+    </div>
+    <div id="legend" class="legend"></div>
+    <p id="graphEmpty" class="empty">周の表で周を選ぶと、ここに重ねて出します（8周まで）。2周以上選ぶと、基準の周とのタイムの差も出します。</p>
+    <div id="plots" class="plots"></div>
   </section>
   <section class="pane map">
     <h2>コース図</h2>
@@ -38,6 +49,7 @@
     <p class="empty">カーソルに合わせて動く動画。2周を並べて比べる。</p>
   </section>
 </main>
+<script src="chart.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

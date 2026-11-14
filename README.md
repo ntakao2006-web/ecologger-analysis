@@ -23,6 +23,7 @@ python -m venv .venv
 - `--browser` を付けると、いつものブラウザで開く（開発用。WebView2 が無いときの逃げ道）
 - 「走行を開く…」で走行のフォルダー（`.ecorun`）を選ぶ。別の日の走行も続けて開ける。最近開いたものは上の一覧から開ける
 - 周の表は「コースの線で切った周」（ふだん）と「ロガーの数え」を切り替えられる。ベストとの差は、同じコースの開いている走行どうしで比べる
+- 周の表で周を選ぶ（8周まで）と、グラフに重ねて出す。横軸は距離と時間を切り替えられ、2周以上なら基準の周（ふだんは一番速い周）とのタイムの差も出す。ホイールで拡大、ドラッグで移動、ダブルクリックで全体
 - 読んだ表は `~/.ecologger-analysis/cache/` に覚え、2回目からはすぐ開く（初回は決勝2時間半ぶんで数秒）
 - 試験：`.venv\Scripts\python -m unittest discover -s tests`
 - 作りものの走行データ：`.venv\Scripts\python -m ecoanalysis.sample data\sample.ecorun`（本物の記録が無いときの画面づくり用。`data/` はGitに入れない）
@@ -33,8 +34,9 @@ python -m venv .venv
 - `ecoanalysis/app.py`：入口。サーバーを立てて pywebview の窓で開く
 - `ecoanalysis/session.py`：走行データ（ecorun）を読み、形が決まりどおりかを確かめる
 - `ecoanalysis/laps.py`：コースの線で、測位から周を切り直す（線を越えた時刻＝線の手前と先の2点から補った値）。ロガーが数えた周と並べて出す
+- `ecoanalysis/overlay.py`：選んだ周を重ねる。距離は基準の周の走った線に沿った距離で、ほかの周は測位の点を基準の線へ投影して合わせる（同じ場所どうしが並び、タイムの差は「同じ場所に何秒遅れて着いたか」）
 - `ecoanalysis/sample.py`：作りものの走行データを書く
-- `web/`：画面（HTML・CSS・JavaScript）
+- `web/`：画面（HTML・CSS・JavaScript）。グラフは自前の canvas（`web/chart.js`）で、外のライブラリを使わない
 
 画面とPythonのやりとりは `/api/` のHTTPだけにしてあり、pywebview 独自の呼び出しは使わない。あとで Electron や Tauri へ移すときも、画面をそのまま使える。
 
