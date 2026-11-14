@@ -225,7 +225,7 @@ async function renderPicked() {
   $('graphEmpty').hidden = !empty;
   $('mapEmpty').hidden = !empty;
   if (empty) {
-    Chart.clear(); CourseMap.clear(); state.overlay = null; state.refSession = null;
+    Chart.clear(); CourseMap.clear(); VideoPane.clear(); state.overlay = null; state.refSession = null; showVideo(0);
     $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; renderLineControls(); return;
   }
   const meta = channelMeta(picks);
@@ -246,10 +246,21 @@ async function renderPicked() {
   const refKey = j.laps[j.ref] && j.laps[j.ref].key;
   state.refSession = state.sessions.find((s) => refKey && refKey.startsWith(s.id + ':')) || null;
   Chart.show($('plots'), j, { x, channels: state.channels.filter((n) => meta.has(n)).map((n) => meta.get(n)), color: colorFor,
-                              onCursor: (v) => CourseMap.setCursor(v) }, true);
+                              onCursor: (v, kind) => { CourseMap.setCursor(v); VideoPane.cursor(v, kind); } }, true);
   CourseMap.show(j, true);
   CourseMap.setCursor(Chart.cursor());
+  showVideo(VideoPane.show(j));
+  VideoPane.cursor(Chart.cursor(), 'pin');
   renderLineControls();
+}
+
+function showVideo(n) {
+  $('vbox').hidden = !n;
+  $('vplay').disabled = !n;
+  $('videoEmpty').hidden = !!n;
+  $('videoEmpty').textContent = state.picked.size && !n
+    ? '選んだ周に動画がありません（動画が入っているのは、書き出しのときに動画を添えた走行だけです）'
+    : '選んだ周に動画があれば、ここに2周を上下に並べます。グラフやコース図のカーソルに合わせて動きます。';
 }
 
 // ---------------------------------------------------------------- コースの線の版
@@ -387,10 +398,17 @@ $('refsel').onchange = (e) => { state.ref = e.target.value; renderPicked(); };
 new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 CourseMap.init($('mapcv'), {
   x: () => state.x, color: colorFor, lines: mapLines, editing: () => !!state.draft,
-  onPick: (v) => { Chart.pin(v); CourseMap.setCursor(v); },
+  onPick: (v) => { Chart.pin(v); CourseMap.setCursor(v); VideoPane.cursor(v, 'pin'); },
   onPlace: placeLine,
 });
 new ResizeObserver(() => CourseMap.redraw()).observe($('mapcv'));
+VideoPane.init($('vbox'), {
+  x: () => state.x, color: colorFor, rate: () => +$('vrate').value,
+  onTime: (x) => { Chart.pin(x); CourseMap.setCursor(x); },
+  onPlayState: (on) => { $('vplay').textContent = on ? '⏸ 止める' : '▶ 再生'; },
+});
+$('vplay').onclick = () => VideoPane.toggle();
+$('vrate').onchange = (e) => VideoPane.setRate(+e.target.value);
 $('linesel').onchange = (e) => { const s = state.refSession; if (s) lineRequest('use', { course: s.course, name: e.target.value || null }); };
 $('editline').onclick = startEdit;
 $('cancelline').onclick = () => { state.draft = null; renderDraft(); };

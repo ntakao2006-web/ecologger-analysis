@@ -213,15 +213,15 @@ const Chart = (() => {
         return;
       }
       cursorX = x; draw();
-      if (opts.onCursor) opts.onCursor(cursorX);
+      if (opts.onCursor) opts.onCursor(cursorX, 'hover');
     });
-    cv.addEventListener('mouseleave', () => { drag = null; cursorX = pinned; draw(); if (opts.onCursor) opts.onCursor(cursorX); });
+    cv.addEventListener('mouseleave', () => { drag = null; cursorX = pinned; draw(); if (opts.onCursor) opts.onCursor(cursorX, 'leave'); });
     cv.addEventListener('mousedown', (e) => { drag = { px: e.clientX, view: view.slice() }; e.preventDefault(); });
     cv.addEventListener('mouseup', (e) => {     // 動かさずに離したら、その所にカーソルを留める
       if (drag && Math.abs(e.clientX - drag.px) < 3) {
         const r = cv.getBoundingClientRect();
         pinned = cursorX = xval(e.clientX - r.left, r.width); draw();
-        if (opts.onCursor) opts.onCursor(cursorX);
+        if (opts.onCursor) opts.onCursor(cursorX, 'pin');
       }
     });
     cv.addEventListener('wheel', (e) => {
@@ -242,7 +242,7 @@ const Chart = (() => {
   }
 
   return {
-    // data：/api/overlay の返事。o：{x: 'dist'|'time', channels: [{name,label,unit,kind}], color(key)}
+    // data：/api/overlay の返事。o：{x: 'dist'|'time', channels: [{name,label,unit,kind}], color(key), onCursor(x, 'hover'|'leave'|'pin')}
     show(el, d, o, keepView) {
       root = el; data = d; opts = o;
       buildPanels(); layout();

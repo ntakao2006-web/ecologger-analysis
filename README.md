@@ -32,7 +32,7 @@ python -m venv .venv
 
 ## 作り
 
-- `ecoanalysis/server.py`：画面と裏の処理をつなぐローカルのHTTPサーバー（127.0.0.1だけで待つ）
+- `ecoanalysis/server.py`：画面と裏の処理をつなぐローカルのHTTPサーバー（127.0.0.1だけで待つ）。動画は `/media/` から、開いている走行の動画だけを途中から読める形（Range、一度に8MBまで）で渡す
 - `ecoanalysis/app.py`：入口。サーバーを立てて pywebview の窓で開く
 - `ecoanalysis/session.py`：走行データ（ecorun）を読み、形が決まりどおりかを確かめる
 - `ecoanalysis/laps.py`：コースの線で、測位から周を切り直す（線を越えた時刻＝線の手前と先の2点から補った値）。ロガーが数えた周と並べて出す
@@ -40,6 +40,7 @@ python -m venv .venv
 - `ecoanalysis/lines.py`：コースの線の版（名前つき）を `~/.ecologger-analysis/lines.json` に残す。版を使うと、同じコースの走行は全部その線で周を切り直す
 - `ecoanalysis/sample.py`：作りものの走行データを書く
 - `web/`：画面（HTML・CSS・JavaScript）。グラフとコース図は自前の canvas（`web/chart.js`・`web/map.js`）で、外のライブラリを使わない
+- `web/video.js`：動画。2周を上下に並べ、止まっているときはカーソルの所へ2本とも動かす。再生すると上の動画からカーソルを動かし、下の動画は同じ所（距離の横軸なら同じ地点）を速さを少し変えて追う。動画の秒は書き出しの対応表（sync）から補って出す
 
 画面とPythonのやりとりは `/api/` のHTTPだけにしてあり、pywebview 独自の呼び出しは使わない。あとで Electron や Tauri へ移すときも、画面をそのまま使える。
 

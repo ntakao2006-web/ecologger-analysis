@@ -14,6 +14,11 @@ from ecoanalysis.sample import write_sample  # noqa: E402
 API = {'X-EcoAnalysis': '1'}
 
 
+def t0_end(meta):
+    """作りものの動画の終わり（ロガーの時刻）"""
+    return meta['laps'][0]['start'] + 20.0 + 80 * 1.001
+
+
 class ServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -115,6 +120,70 @@ class ServerTest(unittest.TestCase):
         self.assertIn('9周目が無い', j['error'])
         self.assertEqual(self.api('overlay', {'laps': 'x'})[0], 400)
         self.api('close', {'id': sid})
+
+    def with_video(self, name):
+        """作りものの走行に、作りものの動画（中身は0〜255の繰り返し）を足す。動画は1周目の途中から2周目の途中まで"""
+        d = write_sample(Path(self.tmp.name) / name)
+        meta = json.loads((d / 'session.json').read_text(encoding='utf-8'))
+        (d / 'video').mkdir()
+        (d / 'video' / '01.mp4').write_bytes(bytes(range(256)) * 40)
+        l1 = meta['laps'][0]
+        t0 = l1['start'] + 20.0
+        meta['videos'] = [{'file': 'video/01.mp4', 'sync': [[float(k), t0 + k * 1.001] for k in range(0, 81)]}]
+        (d / 'session.json').write_text(json.dumps(meta), encoding='utf-8')
+        return d, meta
+
+    def media(self, path, rng=None):
+        host, port = self.srv.server_address
+        c = http.client.HTTPConnection(host, port, timeout=5)
+        c.request('GET', path, headers={'Range': rng} if rng else {})
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, r.getheader('Content-Range'), body
+
+    def test_lap_videos_and_media(self):
+        d, meta = self.with_video('video.ecorun')
+        sid = self.api('open', {'path': str(d)})[1]['session']['id']
+        j = self.api('overlay', {'laps': [{'id': sid, 'lap': n} for n in (1, 2, 3)], 'mode': 'logger', 'channels': []})[1]
+        v1, v2, v3 = (x['video'] for x in j['laps'])
+        l1, l2 = meta['laps'][0], meta['laps'][1]
+        self.assertEqual(len(v1), 1)
+        self.assertEqual(v1[0]['url'], f'/media/{sid}/0')
+        self.assertAlmostEqual(v1[0]['from'], 20.0, places=3)                     # 動画が始まるのは1周目の20秒
+        self.assertAlmostEqual(v1[0]['to'], l1['time_s'], places=3)              # 周の終わりまである
+        self.assertLessEqual(v1[0]['sync'][0][1], v1[0]['from'])                 # 周の範囲の前後1組まで渡す
+        self.assertGreaterEqual(v1[0]['sync'][-1][1], v1[0]['to'])
+        self.assertAlmostEqual(v2[0]['from'], 0.0, places=3)
+        self.assertAlmostEqual(v2[0]['to'], t0_end(meta) - l2['start'], places=3)
+        self.assertEqual(v3, [])                                                 # 3周目には動画が無い
+        url = v1[0]['url']
+        whole = bytes(range(256)) * 40
+        self.assertEqual(self.media(url), (200, None, whole))
+        self.assertEqual(self.media(url, 'bytes=10-19'), (206, f'bytes 10-19/{len(whole)}', whole[10:20]))
+        self.assertEqual(self.media(url, 'bytes=10000-'), (206, f'bytes 10000-10239/{len(whole)}', whole[10000:]))
+        self.assertEqual(self.media(url, 'bytes=-5'), (206, f'bytes 10235-10239/{len(whole)}', whole[-5:]))
+        old = server.MAX_RANGE
+        server.MAX_RANGE = 100                                                   # 一度に返すのは上限まで
+        try:
+            self.assertEqual(self.media(url, 'bytes=50-'), (206, f'bytes 50-149/{len(whole)}', whole[50:150]))
+        finally:
+            server.MAX_RANGE = old
+        self.assertEqual(self.media(url, 'bytes=99999-')[:2], (416, f'bytes */{len(whole)}'))
+        self.assertEqual(self.media(url, 'bytes=abc')[0], 416)
+        self.assertEqual(self.media(f'/media/{sid}/1')[0], 404)                  # 無い動画
+        self.assertEqual(self.media('/media/s999/0')[0], 404)                    # 開いていない走行
+        self.api('close', {'id': sid})
+        self.assertEqual(self.media(url)[0], 404)                                # 閉じたら出さない
+
+    def test_media_needs_local_host(self):
+        host, port = self.srv.server_address
+        c = http.client.HTTPConnection(host, port, timeout=5)
+        c.request('GET', '/media/s1/0', headers={'Host': f'evil.example:{port}'})
+        r = c.getresponse()
+        r.read()
+        c.close()
+        self.assertEqual(r.status, 403)
 
     def test_open_errors(self):
         code, j = self.api('open', {'path': str(Path(self.tmp.name) / 'none.ecorun')})

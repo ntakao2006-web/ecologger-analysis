@@ -9,6 +9,7 @@
 """
 import json
 import mimetypes
+import re
 import subprocess
 import sys
 import threading
@@ -24,6 +25,11 @@ HOME = Path.home() / '.ecologger-analysis'
 API_HEADER = 'X-EcoAnalysis'
 MAX_BODY = 1 << 20
 RECENT_KEEP = 10
+CHUNK = 1 << 20
+MAX_RANGE = 8 << 20     # 途中から読む頼みに一度で返す上限。終わりを書かない頼み（bytes=N-）に残り全部を流し続けると、
+                        # 画面がつながりを握ったまま読まなくなり、早送り・巻き戻しが止まる（Chromiumで確かめた）
+MEDIA = re.compile(r'^/media/(s\d+)/(\d+)$')
+RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
 mimetypes.add_type('text/javascript', '.js')
 mimetypes.add_type('video/mp4', '.mp4')
 
@@ -112,8 +118,23 @@ class Store:
                 if lap is None:
                     raise KeyError(f'{it["session"].title} に {p.get("lap")}周目が無い')
                 items.append({'key': f'{p["id"]}:{lap["lap"]}', 'label': f'{it["session"].title} {lap["lap"]}周',
-                              'session': it['session'], 'lap': lap})
-        return overlay.compare(items, channels, ref)
+                              'session': it['session'], 'lap': lap, 'sid': p['id']})
+        out = overlay.compare(items, channels, ref)
+        for item, lap in zip(items, out['laps']):
+            lap['video'] = lap_videos(item['sid'], item['session'], item['lap'])
+        return out
+
+    def media(self, sid, idx):
+        """開いている走行の idx 本目の動画のファイル。無ければ None"""
+        with self.lock:
+            it = self.items.get(sid)
+        if it is None:
+            return None
+        s = it['session']
+        if not 0 <= idx < len(s.videos):
+            return None
+        f = session.safe_file(s.path, s.videos[idx].get('file'))
+        return f if f and f.is_file() else None
 
     def list(self):
         with self.lock:
@@ -154,6 +175,26 @@ def pick_with_tk():
     except (OSError, subprocess.TimeoutExpired):
         return None
     return out.stdout.strip() or None
+
+
+def lap_videos(sid, s, lap):
+    """その周に重なる動画。[{url, sync: [[動画の秒, 周の頭からの秒], …], from, to}]（周の頭からの秒の順）。
+
+    sync は周の範囲とその前後1組だけに絞る。from・to は動画がある周の中の範囲（周の頭からの秒）。
+    """
+    out = []
+    for i, v in enumerate(s.videos):
+        sync = v['sync']
+        ts = [p[1] for p in sync]
+        lo, hi = max(lap['start'], ts[0]), min(lap['end'], ts[-1])
+        if hi <= lo:
+            continue
+        a = max(0, next(k for k, t in enumerate(ts) if t >= lo) - 1)
+        b = min(len(ts) - 1, next(k for k, t in enumerate(ts) if t >= hi))
+        out.append({'url': f'/media/{sid}/{i}', 'from': round(lo - lap['start'], 3), 'to': round(hi - lap['start'], 3),
+                    'sync': [[round(sync[k][0], 3), round(sync[k][1] - lap['start'], 3)] for k in range(a, b + 1)]})
+    out.sort(key=lambda x: x['from'])
+    return out
 
 
 def summary(sid, it):
@@ -227,6 +268,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({'ok': False, 'error': 'not found'}, 404)
         if not self._host_ok():
             return self._send(403, b'forbidden', 'text/plain; charset=utf-8')
+        m = MEDIA.match(path)
+        if m:
+            return self._media(m.group(1), int(m.group(2)))
         rel = 'index.html' if path in ('', '/') else path.lstrip('/')
         f = (WEB / rel).resolve()
         if WEB not in f.parents or not f.is_file():      # web/ の外は出さない
@@ -235,6 +279,55 @@ class Handler(BaseHTTPRequestHandler):
         if ctype.startswith('text/') or ctype.endswith('javascript'):
             ctype += '; charset=utf-8'
         self._send(200, f.read_bytes(), ctype)
+
+    def _media(self, sid, idx):
+        """動画を渡す。<video> は見出しを付けられないので、Host だけ見る。開いている走行の動画だけを出す。
+        途中から読む頼み（Range）に答える（早送り・巻き戻しに要る）"""
+        f = self.store.media(sid, idx)
+        if f is None:
+            return self._send(404, b'not found', 'text/plain; charset=utf-8')
+        size = f.stat().st_size
+        a, b, code = 0, size - 1, 200
+        rng = self.headers.get('Range')
+        if rng:
+            m = RANGE.match(rng.strip())
+            if not m or (not m.group(1) and not m.group(2)):
+                return self._unsatisfiable(size)
+            if m.group(1):
+                a = int(m.group(1))
+                b = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+            else:                                   # bytes=-N：最後の N バイト
+                a = max(0, size - int(m.group(2)))
+            if a >= size or a > b:
+                return self._unsatisfiable(size)
+            b = min(b, a + MAX_RANGE - 1)           # 頼まれたより短く返してよい（画面は続きをまた頼む）
+            code = 206
+        self.send_response(code)
+        self.send_header('Content-Type', mimetypes.guess_type(f.name)[0] or 'application/octet-stream')
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Length', str(b - a + 1))
+        if code == 206:
+            self.send_header('Content-Range', f'bytes {a}-{b}/{size}')
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        try:
+            with open(f, 'rb') as fh:
+                fh.seek(a)
+                left = b - a + 1
+                while left > 0:
+                    chunk = fh.read(min(CHUNK, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass                                    # 早送りで、画面が途中で読むのをやめた
+
+    def _unsatisfiable(self, size):
+        self.send_response(416)
+        self.send_header('Content-Range', f'bytes */{size}')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def do_POST(self):
         path = urlparse(self.path).path
