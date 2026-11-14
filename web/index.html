@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcoLogger 解析</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>EcoLogger 解析</h1>
+  <button id="open" type="button" disabled title="SP-10-3 で作る">走行を開く…</button>
+  <span class="grow"></span>
+  <span id="status" class="status">つないでいます…</span>
+</header>
+<main class="layout">
+  <section class="pane laps">
+    <h2>周</h2>
+    <p class="empty">走行を開くと、ここに周の一覧が出ます。</p>
+  </section>
+  <section class="pane graph">
+    <h2>グラフ</h2>
+    <p class="empty">選んだ周の重ね合わせ（時間・距離）とタイムの差。</p>
+  </section>
+  <section class="pane map">
+    <h2>コース図</h2>
+    <p class="empty">周の線とカーソル。</p>
+  </section>
+  <section class="pane video">
+    <h2>動画</h2>
+    <p class="empty">カーソルに合わせて動く動画。2周を並べて比べる。</p>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #d9dde5; --accent: #2563eb; --ok: #15803d; --ng: #b91c1c;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171c; --panel: #1c2027; --text: #e6e8ec; --muted: #9aa3b2; --line: #2e3440; --accent: #60a5fa; --ok: #4ade80; --ng: #f87171; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 "Yu Gothic UI", "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+.bar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.bar h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.grow { flex: 1; }
+button { font: inherit; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
+button:disabled { color: var(--muted); cursor: default; }
+.status { color: var(--muted); font-size: 12px; }
+.status.ok { color: var(--ok); }
+.status.ng { color: var(--ng); }
+.layout { flex: 1; min-height: 0; display: grid; gap: 8px; padding: 8px;
+  grid-template-columns: minmax(240px, 22%) 1fr minmax(320px, 34%);
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas: "laps graph video" "laps graph map"; }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 0; overflow: auto; }
+.pane h2 { font-size: 13px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+.laps { grid-area: laps; } .graph { grid-area: graph; } .video { grid-area: video; } .map { grid-area: map; }
+.empty { color: var(--muted); margin: 0; }

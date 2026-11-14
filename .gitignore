@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+# 走行の記録・動画は位置を含むので入れない（試すときは data/ に置く）
+data/
+*.mp4
+*.ts
