@@ -9,18 +9,25 @@
 <body>
 <header class="bar">
   <h1>EcoLogger 解析</h1>
-  <button id="open" type="button" disabled title="SP-10-3 で作る">走行を開く…</button>
+  <button id="open" type="button">走行を開く…</button>
+  <select id="recent" aria-label="最近開いた走行"><option value="">最近開いた走行</option></select>
+  <div class="seg" role="radiogroup" aria-label="周の切り方">
+    <label title="コースの線で、測位から周を切り直したもの"><input type="radio" name="mode" value="app" checked>コースの線で切った周</label>
+    <label title="ロガーが走りながら数えた周"><input type="radio" name="mode" value="logger">ロガーの数え</label>
+  </div>
   <span class="grow"></span>
   <span id="status" class="status">つないでいます…</span>
 </header>
 <main class="layout">
   <section class="pane laps">
     <h2>周</h2>
-    <p class="empty">走行を開くと、ここに周の一覧が出ます。</p>
+    <div id="message" class="message" hidden></div>
+    <div id="sessions"><p class="empty">「走行を開く…」で、走行のフォルダー（名前が .ecorun で終わるもの）を選びます。別の日の走行も続けて開けます。</p></div>
   </section>
   <section class="pane graph">
     <h2>グラフ</h2>
     <p class="empty">選んだ周の重ね合わせ（時間・距離）とタイムの差。</p>
+    <p id="picked" class="picked"></p>
   </section>
   <section class="pane map">
     <h2>コース図</h2>

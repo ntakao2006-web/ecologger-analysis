@@ -6,9 +6,11 @@
 """
 import csv
 import gzip
+import hashlib
 import io
 import json
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +23,8 @@ VERSIONS = {1}
 GNSS_COLUMNS = ['t', 'lat', 'lon', 'alt_m', 'speed_kmh', 'heading_deg', 'sats', 'hacc_m']
 NAME = re.compile(r'^[A-Za-z0-9_]+$')
 SLACK_S = 1.0     # 周の時刻が、チャンネルの範囲からこれだけ外れるのは許す
+CACHE_VERSION = 1  # 覚えた表の形を変えたら上げる
+CACHE_KEEP = 20    # 覚えておく表の数（古いものから消す）
 
 
 class SessionError(Exception):
@@ -69,22 +73,65 @@ def increasing(values):
     return all(b > a for a, b in zip(values, values[1:]))
 
 
-def read_table(path):
-    """CSV（.gz も）→ (見出し, 列ごとの float の配列)。空欄は NaN"""
+def read_table(path, cache=None):
+    """CSV（.gz も）→ (見出し, 列ごとの float の配列)。空欄は NaN。
+    cache（フォルダー）を渡すと、読んだ表をそこに覚え、ファイルが同じ（場所・大きさ・更新時刻）なら次からそれを使う"""
+    path = Path(path)
+    key = None
+    if cache is not None:
+        st = path.stat()
+        key = hashlib.sha1(f'{path.resolve()}|{st.st_size}|{st.st_mtime_ns}|{CACHE_VERSION}'.encode()).hexdigest()[:20]
+        hit = Path(cache) / f'{key}.npz'
+        try:
+            with np.load(hit, allow_pickle=False) as z:
+                header = [str(h) for h in z['header']]
+                data = z['data']
+            os.utime(hit)          # よく使うものを残す目印
+            return header, [data[:, i] for i in range(data.shape[1])]
+        except (OSError, KeyError, ValueError):
+            pass
     raw = path.read_bytes()
     if path.name.endswith('.gz'):
         raw = gzip.decompress(raw)
-    rows = csv.reader(io.StringIO(raw.decode('utf-8')))
-    header = next(rows, [])
-    cols = [[] for _ in header]
-    for r in rows:
-        if not r:
-            continue
-        if len(r) != len(header):
-            raise ValueError(f'{path.name}：列の数が見出しと違う行がある')
-        for c, v in zip(cols, r):
-            c.append(float(v) if v else math.nan)
-    return header, [np.array(c, dtype=float) for c in cols]
+    text = raw.decode('utf-8').replace('\r', '')
+    head, _, body = text.partition('\n')
+    header = next(csv.reader([head]), []) if head else []
+    if not header:
+        return [], []
+    body = '\n' + body.strip('\n')
+    if body == '\n':
+        data = np.empty((0, len(header)))
+    else:
+        for _ in range(2):                       # 空欄 → nan（,,, の続きも2回で埋まる）
+            body = body.replace(',,', ',nan,')
+        body = body.replace('\n,', '\nnan,').replace(',\n', ',nan\n')
+        if body.endswith(','):
+            body += 'nan'
+        try:
+            data = np.loadtxt(io.StringIO(body), delimiter=',', ndmin=2, dtype=float)
+        except ValueError as e:
+            raise ValueError(f'{path.name}：数として読めない所か、列の数が見出しと違う行がある（{e}）'[:300])
+        if data.shape[1] != len(header):
+            raise ValueError(f'{path.name}：列の数が見出しと違う')
+    if key is not None:
+        try:
+            Path(cache).mkdir(parents=True, exist_ok=True)
+            tmp = Path(cache) / f'{key}.tmp.npz'
+            np.savez(tmp, header=np.array(header), data=data)
+            os.replace(tmp, Path(cache) / f'{key}.npz')
+            _prune(Path(cache))
+        except OSError:
+            pass
+    return header, [data[:, i] for i in range(data.shape[1])]
+
+
+def _prune(cache, keep=CACHE_KEEP):
+    files = sorted(cache.glob('*.npz'), key=lambda f: f.stat().st_mtime, reverse=True)
+    for f in files[keep:]:
+        try:
+            f.unlink()
+        except OSError:
+            pass
 
 
 def video_seconds(sync, t):
@@ -175,7 +222,7 @@ def check_meta(meta, root):
 
 
 # ---------------------------------------------------------------- 読む
-def load(path):
+def load(path, cache=None):
     root = Path(path)
     meta_path = root / 'session.json'
     try:
@@ -190,7 +237,7 @@ def load(path):
 
     names = [c['name'] for c in meta['channels']]
     try:
-        header, cols = read_table(safe_file(root, meta['channels_file']))
+        header, cols = read_table(safe_file(root, meta['channels_file']), cache)
     except (OSError, ValueError) as e:
         raise SessionError([f'チャンネルのファイルが読めない（{e}）'])
     if header != ['t'] + names:
@@ -202,7 +249,7 @@ def load(path):
     gnss = None
     if 'gnss_file' in meta:
         try:
-            gh, gc = read_table(safe_file(root, meta['gnss_file']))
+            gh, gc = read_table(safe_file(root, meta['gnss_file']), cache)
         except (OSError, ValueError) as e:
             raise SessionError([f'測位のファイルが読めない（{e}）'])
         if gh != GNSS_COLUMNS:

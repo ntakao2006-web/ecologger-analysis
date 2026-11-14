@@ -38,7 +38,13 @@ def main(argv=None):
     except ImportError:
         print('pywebview が入っていません（pip install -r requirements.txt）。--browser で開けます', file=sys.stderr)
         return 1
-    webview.create_window(f'{TITLE} {__version__}', url, width=1400, height=900, min_size=(900, 600))
+    win = webview.create_window(f'{TITLE} {__version__}', url, width=1400, height=900, min_size=(900, 600))
+
+    def pick():
+        got = win.create_file_dialog(webview.FileDialog.FOLDER)
+        return str(got[0]) if got else None
+
+    srv.store.picker = pick
     STORAGE.mkdir(parents=True, exist_ok=True)
     webview.start(private_mode=False, storage_path=str(STORAGE))   # 窓を閉じるまで戻らない
     srv.shutdown()

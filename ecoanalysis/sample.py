@@ -29,8 +29,8 @@ def write_sample(folder, laps=3, rate=20.0, lap_s=(62.0, 60.5, 61.2, 59.8, 60.9)
 
     def where(t):
         """t のときの (周の中の割合の通算, 速さの倍率)"""
-        if t < lead:
-            return 0.0, 1.0
+        if t < lead:                     # 線の手前から近づいて、t = lead で線を越える
+            return (t - lead) / times[0], 60.0 / times[0]
         at = lead
         for i, s in enumerate(times):
             if t < at + s:
@@ -69,10 +69,17 @@ def write_sample(folder, laps=3, rate=20.0, lap_s=(62.0, 60.5, 61.2, 59.8, 60.9)
                          'sectors': [round(s * 0.3, 3), round(s * 0.4, 3), round(s - round(s * 0.3, 3) - round(s * 0.4, 3), 3)]})
         at += s
     lat0, lon0 = _xy_to_latlon(0.0, RY)
+
+    def gate(u):                         # 周の割合 u の所に、進む向きに直角な線
+        a = 2 * math.pi * u
+        lat, lon = _xy_to_latlon(RX * math.sin(a), RY * math.cos(a))
+        bearing = (math.degrees(math.atan2(RX * math.cos(a), -RY * math.sin(a))) + 360) % 360
+        return {'lat': lat, 'lon': lon, 'bearing': round(bearing, 3), 'width_m': 30.0}
     meta = {
         'format': 'ecorun', 'version': 1, 'created_by': 'ecoanalysis.sample',
         'title': '作りものの走行', 't0_utc': '2026-01-01T00:00:00.000Z', 'duration_s': round(n / rate, 3), 'clock': 'gnss',
-        'course': {'name': '架空の楕円コース', 'line': {'lat': lat0, 'lon': lon0, 'bearing': 90.0, 'width_m': 30.0}, 'sectors': []},
+        'course': {'name': '架空の楕円コース', 'line': {'lat': lat0, 'lon': lon0, 'bearing': 90.0, 'width_m': 30.0},
+                   'sectors': [gate(0.3), gate(0.7)]},
         'channels_file': 'channels.csv.gz',
         'channels': [{'name': c[0], 'unit': c[1], 'kind': c[2], 'label': c[3]} for c in channels], 'rate_hz': rate,
         'gnss_file': 'gnss.csv.gz', 'gnss': {'source': 'sample', 'rate_hz': 10},

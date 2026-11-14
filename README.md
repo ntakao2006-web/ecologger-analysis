@@ -21,6 +21,9 @@ python -m venv .venv
 
 - 専用の窓で開く（pywebview。表示はWindowsに入っている Microsoft Edge WebView2 ランタイム）
 - `--browser` を付けると、いつものブラウザで開く（開発用。WebView2 が無いときの逃げ道）
+- 「走行を開く…」で走行のフォルダー（`.ecorun`）を選ぶ。別の日の走行も続けて開ける。最近開いたものは上の一覧から開ける
+- 周の表は「コースの線で切った周」（ふだん）と「ロガーの数え」を切り替えられる。ベストとの差は、同じコースの開いている走行どうしで比べる
+- 読んだ表は `~/.ecologger-analysis/cache/` に覚え、2回目からはすぐ開く（初回は決勝2時間半ぶんで数秒）
 - 試験：`.venv\Scripts\python -m unittest discover -s tests`
 - 作りものの走行データ：`.venv\Scripts\python -m ecoanalysis.sample data\sample.ecorun`（本物の記録が無いときの画面づくり用。`data/` はGitに入れない）
 
@@ -29,6 +32,7 @@ python -m venv .venv
 - `ecoanalysis/server.py`：画面と裏の処理をつなぐローカルのHTTPサーバー（127.0.0.1だけで待つ）
 - `ecoanalysis/app.py`：入口。サーバーを立てて pywebview の窓で開く
 - `ecoanalysis/session.py`：走行データ（ecorun）を読み、形が決まりどおりかを確かめる
+- `ecoanalysis/laps.py`：コースの線で、測位から周を切り直す（線を越えた時刻＝線の手前と先の2点から補った値）。ロガーが数えた周と並べて出す
 - `ecoanalysis/sample.py`：作りものの走行データを書く
 - `web/`：画面（HTML・CSS・JavaScript）
 
