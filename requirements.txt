@@ -1,2 +1,2 @@
-# 動かすのに要るもの（ライセンスは THIRD_PARTY.md。足すときは tools/check_licenses.py を通す）
 pywebview>=6.2
+numpy>=2.3

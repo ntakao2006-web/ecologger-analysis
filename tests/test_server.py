@@ -46,12 +46,14 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.get('/api/nothing')
         self.assertEqual(cm.exception.code, 404)
+        cm.exception.close()
 
     def test_no_files_outside_web(self):
         for path in ('/../LICENSE', '/..%2fLICENSE', '/%2e%2e/ecoanalysis/server.py'):
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 self.get(path)
             self.assertEqual(cm.exception.code, 404, path)
+            cm.exception.close()
 
 
 if __name__ == '__main__':
