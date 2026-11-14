@@ -9,6 +9,7 @@
 """
 import json
 import mimetypes
+import os
 import re
 import subprocess
 import sys
@@ -36,6 +37,14 @@ mimetypes.add_type('text/javascript', '.js')
 mimetypes.add_type('video/mp4', '.mp4')
 
 
+def _stamp(path):
+    """走行の session.json の更新時刻（書き出し直されたかを見る）"""
+    try:
+        return (Path(path) / 'session.json').stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 class Store:
     """開いている走行（id → 走行と、アプリで切った周）"""
 
@@ -45,6 +54,11 @@ class Store:
         self.items = {}
         self.next_id = 1
         self.picker = None          # フォルダーを選ぶ窓（app.py が pywebview の窓を渡す）
+        self.raiser = None          # 窓を前に出す（同じく）
+        self.rev = 0                # 開いている走行・周が変わるたびに増やす（画面はこれを見て読み直す）
+        self.notice = None          # 画面に出す知らせ {id, text, problems}（ほかから渡された走行を開けなかったときなど）
+        self.mode, self.mode_note = 'window', None   # 'browser'：いつものブラウザで開いている
+        self.last_seen = None       # 画面から最後に知らせがあった時刻
         self.lines = lines.Lines(self.home / 'lines.json')
         self.formulas = formula.Formulas(self.home / 'channels.json')
 
@@ -57,19 +71,27 @@ class Store:
         if path.name == 'session.json':
             path = path.parent
         key = str(path.resolve())
+        stamp = _stamp(path)
+        old = None
         with self.lock:
             for sid, it in self.items.items():
                 if it['key'] == key:
-                    return summary(sid, it)
+                    if it.get('stamp') == stamp:
+                        return summary(sid, it)
+                    old = sid                # 書き出し直された走行：同じ番号のまま読み直す
         t = time.perf_counter()
         s = session.load(path, self.cache)
-        it = {'key': key, 'session': s, 'load_s': None}
+        it = {'key': key, 'session': s, 'load_s': None, 'stamp': stamp}
         self._cut(it)
         it['load_s'] = round(time.perf_counter() - t, 2)
         with self.lock:
-            sid = f's{self.next_id}'
-            self.next_id += 1
+            if old and old in self.items:
+                sid = old
+            else:
+                sid = f's{self.next_id}'
+                self.next_id += 1
             self.items[sid] = it
+            self.rev += 1
         self.remember(key)
         return summary(sid, it)
 
@@ -101,11 +123,36 @@ class Store:
             for it in self.items.values():
                 if (it['session'].meta.get('course') or {}).get('name') == course:
                     self._cut(it)
+            self.rev += 1
         return self.list()
 
     def close(self, sid):
         with self.lock:
-            return self.items.pop(sid, None) is not None
+            gone = self.items.pop(sid, None) is not None
+            if gone:
+                self.rev += 1
+            return gone
+
+    def notify(self, text, problems=None):
+        with self.lock:
+            self.notice = {'id': (self.notice or {}).get('id', 0) + 1, 'text': text, 'problems': list(problems or [])}
+            self.rev += 1
+
+    def open_many(self, paths):
+        """走行を続けて開く。開けないものは知らせに残す（ほかのアプリから渡されたとき・起動のときに使う）"""
+        for p in paths:
+            try:
+                self.open(p)
+            except session.SessionError as e:
+                self.notify(f'{Path(p).name} を開けません', e.problems)
+            except OSError as e:
+                self.notify(f'{Path(p).name} を開けません（{e}）')
+
+    def health(self):
+        self.last_seen = time.time()
+        with self.lock:
+            return {'ok': True, 'app': 'ecologger-analysis', 'version': __version__, 'rev': self.rev,
+                    'mode': self.mode, 'mode_note': self.mode_note, 'notice': self.notice}
 
     def overlay(self, picks, mode, channels, ref=None):
         """picks：[{id, lap}]。mode：'app'（コースの線で切った周）か 'logger'。周が見つからなければ KeyError"""
@@ -214,7 +261,22 @@ class Store:
 
 
 def pick_with_tk():
-    """ブラウザで開いているとき（pywebview の窓が無いとき）の、フォルダーを選ぶ窓。別のプロセスで出す"""
+    """ブラウザで開いているとき（pywebview の窓が無いとき）の、フォルダーを選ぶ窓。別のプロセスで出す。
+    exe（PyInstaller）のときは -c が使えないので、exe 自身を --pick-folder で呼び、選んだ所をファイルで受け取る"""
+    if getattr(sys, 'frozen', False):
+        import tempfile
+        fd, out = tempfile.mkstemp(suffix='.txt', prefix='ecoanalysis_pick_')
+        os.close(fd)
+        try:
+            subprocess.run([sys.executable, '--pick-folder', out], timeout=600)
+            return Path(out).read_text(encoding='utf-8').strip() or None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        finally:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
     code = ('import tkinter as t, tkinter.filedialog as f\n'
             'r = t.Tk(); r.withdraw(); r.attributes("-topmost", True)\n'
             'print(f.askdirectory(title="走行のフォルダー（.ecorun）を選ぶ") or "")\n')
@@ -313,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._api_ok():
                 return
             if path == '/api/health':
-                return self._json({'ok': True, 'app': 'ecologger-analysis', 'version': __version__})
+                return self._json(self.store.health())
             if path == '/api/sessions':
                 return self._json({'ok': True, 'sessions': self.store.list()})
             if path == '/api/recent':
@@ -399,7 +461,8 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(p, str) or not p.strip():
                 return self._json({'ok': False, 'error': 'path が無い'}, 400)
             try:
-                return self._json({'ok': True, 'session': self.store.open(p.strip().strip('"'))})
+                s = self.store.open(p.strip().strip('"'))
+                return self._json({'ok': True, 'session': s, 'rev': self.store.rev})
             except session.SessionError as e:
                 return self._json({'ok': False, 'error': '走行データを開けません', 'problems': e.problems}, 400)
             except OSError as e:
@@ -418,7 +481,7 @@ class Handler(BaseHTTPRequestHandler):
                                                 body.get('line'), body.get('sectors'))
             except lines.LineError as e:
                 return self._json({'ok': False, 'error': str(e)}, 400)
-            return self._json({'ok': True, 'sessions': sessions})
+            return self._json({'ok': True, 'sessions': sessions, 'rev': self.store.rev})
         if path == '/api/formulas/check':
             expr = body.get('expr')
             if not isinstance(expr, str):
@@ -432,7 +495,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': False, 'error': str(e), 'pos': e.pos}, 400)
             return self._json({'ok': True, 'formulas': items})
         if path == '/api/close':
-            return self._json({'ok': self.store.close(body.get('id'))})
+            return self._json({'ok': self.store.close(body.get('id')), 'rev': self.store.rev})
+        if path == '/api/handover':
+            paths = body.get('paths')
+            if not isinstance(paths, list) or not all(isinstance(x, str) for x in paths):
+                return self._json({'ok': False, 'error': 'paths の形が違う'}, 400)
+            self.store.open_many(paths[:20])
+            if self.store.raiser:
+                self.store.raiser()
+            return self._json({'ok': True})
         if path == '/api/pick':
             return self._json({'ok': True, 'path': self.store.pick()})
         return self._json({'ok': False, 'error': 'not found'}, 404)

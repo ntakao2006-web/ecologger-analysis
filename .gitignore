@@ -9,3 +9,4 @@ data/
 *.mp4
 *.ts
 *.ecorun/
+.venv-build/

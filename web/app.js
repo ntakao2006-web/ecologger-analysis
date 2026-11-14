@@ -2,7 +2,7 @@
 'use strict';
 
 const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 'dist', channels: null, ref: '', colors: new Map(), req: 0,
-                overlay: null, refSession: null, draft: null, formulas: [], help: null, editing: null };
+                overlay: null, refSession: null, draft: null, formulas: [], help: null, editing: null, rev: null, notice: 0 };
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
 const DEFAULT_CHANNELS = ['Speed', 'Throttle', 'RPM', 'LongAccel', 'LatAccel'];
 try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
@@ -456,6 +456,7 @@ function placeLine(p) {
 async function lineRequest(action, body) {
   try {
     const j = await api('lines/' + action, body);
+    if (j.rev !== undefined) state.rev = j.rev;
     if (!j.ok) { status(j.error, 'ng'); return false; }
     const byId = new Map(j.sessions.map((x) => [x.id, x]));
     state.sessions = state.sessions.map((x) => byId.get(x.id) || x);
@@ -471,6 +472,7 @@ async function openPath(path) {
   message(null);
   try {
     const j = await api('open', { path });
+    if (j.rev !== undefined) state.rev = j.rev;
     if (!j.ok) { status('開けませんでした', 'ng'); message(j.error, j.problems); return; }
     if (!state.sessions.some((s) => s.id === j.session.id)) state.sessions.push(j.session);
     status(`開きました：${j.session.title}`, 'ok');
@@ -495,7 +497,7 @@ async function pickAndOpen() {
 }
 
 async function closeSession(id) {
-  try { await api('close', { id }); } catch (e) { /* 画面からは消す */ }
+  try { const j = await api('close', { id }); if (j.rev !== undefined) state.rev = j.rev; } catch (e) { /* 画面からは消す */ }
   state.sessions = state.sessions.filter((s) => s.id !== id);
   for (const k of [...state.picked]) if (k.startsWith(id + ':')) { state.picked.delete(k); state.colors.delete(k); }
   render();
@@ -515,6 +517,10 @@ async function start() {
   try {
     const j = await api('health');
     status(`準備できました（v${j.version}）`, 'ok');
+    state.rev = j.rev; state.notice = j.notice ? j.notice.id : 0;
+    if (j.mode === 'browser' && j.mode_note) $('modenote').textContent = j.mode_note;
+    $('modenote').hidden = !(j.mode === 'browser' && j.mode_note);
+    if (j.notice) message(j.notice.text, j.notice.problems);
     await loadFormulas();
     const s = await api('sessions');
     state.sessions = s.sessions || [];
@@ -523,6 +529,27 @@ async function start() {
   } catch (e) {
     status('裏の処理とつながっていません', 'ng');
   }
+  setInterval(watch, 3000);
+}
+
+// 3秒ごとに裏へ知らせる。ほかのアプリ（EcoLoggerアプリなど）から走行が渡されて rev が変わったら、一覧を読み直す。
+// ブラウザで開いているときは、この知らせが途絶えると裏が終わる（タブを閉じたら終わる）
+async function watch() {
+  let j;
+  try { j = await api('health'); } catch (e) { status('裏の処理とつながっていません（アプリを閉じたか、終わった）', 'ng'); return; }
+  if (j.notice && j.notice.id !== state.notice) { state.notice = j.notice.id; message(j.notice.text, j.notice.problems); }
+  if (j.rev === state.rev) return;
+  state.rev = j.rev;
+  try {
+    const s = await api('sessions');
+    const before = new Set(state.sessions.map((x) => x.id));
+    state.sessions = s.sessions || [];
+    const added = state.sessions.filter((x) => !before.has(x.id));
+    for (const k of [...state.picked]) if (!state.sessions.some((x) => k.startsWith(x.id + ':'))) { state.picked.delete(k); state.colors.delete(k); }
+    if (added.length) status(`開きました：${added.map((x) => x.title).join('、')}`, 'ok');
+    render();
+    loadRecent();
+  } catch (e) { /* 次の知らせで読み直す */ }
 }
 
 $('open').onclick = pickAndOpen;

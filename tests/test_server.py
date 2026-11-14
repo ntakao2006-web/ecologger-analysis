@@ -1,5 +1,7 @@
 import http.client
 import json
+import time
+import os
 import sys
 import tempfile
 import unittest
@@ -56,7 +58,9 @@ class ServerTest(unittest.TestCase):
     def test_health(self):
         code, j = self.api('health')
         self.assertEqual(code, 200)
-        self.assertEqual(j, {'ok': True, 'app': 'ecologger-analysis', 'version': __version__})
+        self.assertEqual({k: j[k] for k in ('ok', 'app', 'version', 'mode')}, {'ok': True, 'app': 'ecologger-analysis', 'version': __version__, 'mode': 'window'})
+        self.assertIsInstance(j['rev'], int)
+        self.assertIsNotNone(self.srv.store.last_seen)          # 画面からの知らせを覚えた
 
     def test_api_needs_header_and_local_host(self):
         self.assertEqual(self.request('/api/health', headers={})[0], 403)
@@ -208,6 +212,38 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.api('formulas/rename', {'name': 'ms'})[0], 400)
         self.assertEqual(self.request('/api/formulas/check', {'expr': '1'}, headers={})[0], 403)
         self.api('close', {'id': sid})
+
+    def test_handover_opens_and_raises(self):
+        raised = []
+        self.srv.store.raiser = lambda: raised.append(1)
+        try:
+            rev = self.api('health')[1]['rev']
+            bad = str(Path(self.tmp.name) / 'nothing.ecorun')
+            code, j = self.api('handover', {'paths': [str(self.sample), bad]})
+            self.assertEqual(code, 200, j)
+            self.assertEqual(raised, [1])
+            h = self.api('health')[1]
+            self.assertGreater(h['rev'], rev)                    # 画面は rev が変わったのを見て読み直す
+            self.assertIn('nothing.ecorun を開けません', h['notice']['text'])
+            sessions = self.api('sessions')[1]['sessions']
+            self.assertEqual([s['path'] for s in sessions], [str(self.sample.resolve())])
+            self.assertEqual(self.api('handover', {'paths': 'x'})[0], 400)
+            self.api('close', {'id': sessions[0]['id']})
+        finally:
+            self.srv.store.raiser = None
+
+    def test_reexported_session_is_reloaded_in_place(self):
+        path = write_sample(Path(self.tmp.name) / 'again.ecorun')
+        first = self.api('open', {'path': str(path)})[1]['session']
+        self.assertEqual(self.api('open', {'path': str(path)})[1]['session']['id'], first['id'])   # 同じなら開き直さない
+        meta = json.loads((path / 'session.json').read_text(encoding='utf-8'))
+        meta['title'] = '書き出し直した走行'
+        (path / 'session.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+        os.utime(path / 'session.json', ns=(time.time_ns(), time.time_ns() + 10**9))
+        again = self.api('open', {'path': str(path)})[1]['session']
+        self.assertEqual((again['id'], again['title']), (first['id'], '書き出し直した走行'))
+        self.assertEqual(sum(1 for x in self.api('sessions')[1]['sessions'] if x['id'] == first['id']), 1)
+        self.api('close', {'id': first['id']})
 
     def test_open_errors(self):
         code, j = self.api('open', {'path': str(Path(self.tmp.name) / 'none.ecorun')})

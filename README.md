@@ -1,6 +1,6 @@
 # EcoLogger 解析
 
-自作の車載データロガー（EcoLogger）の走行を解析するデスクトップアプリ。作っている途中（0.0.1：窓が開くだけ）。
+自作の車載データロガー（EcoLogger）の走行を解析するデスクトップアプリ（Windows）。0.1.0：走行を開く・周の重ね合わせ・コース図・動画・計算チャンネル・配る形（exe）まで。
 
 ## めざすもの
 
@@ -11,7 +11,28 @@
 
 ロガーとの境目は、走行1回ぶんのファイルの形式だけ（物理量の表・周・動画の対応表・コースの線）。形式は [docs/format.md](docs/format.md)（ecorun、版1）。
 
-## 動かし方（Windows）
+## 使う人へ（配る形）
+
+1. `EcoLogger-Analysis-<版>-win64.zip` を広げる。EcoLogger アプリ（ロガーのPCの道具）から開くなら、
+   `%USERPROFILE%\.ecologger\` に広げる（`%USERPROFILE%\.ecologger\EcoLogger-Analysis\EcoLogger-Analysis.exe` になる）
+2. `EcoLogger-Analysis.exe` を開く。走行のフォルダー（`.ecorun`）を exe に落とすか、引数に渡しても開く
+- **もう開いているときに別の走行を渡すと、開いている窓のほうで開いて前に出る**（窓は増えない）。
+  EcoLogger アプリの「走行を見る」の「解析で開く」も、この形で走行を渡す
+- 表示は Windows に入っている Microsoft Edge WebView2 ランタイムを使う。**無い機器では、いつものブラウザで開く**
+  （画面の上に理由が出る。タブを閉じるとしばらくして終わる）。入れたいときは Microsoft の「Evergreen Bootstrapper」から
+- 残すもの（最近開いた走行・線の版・計算チャンネル・読んだ表の控え）は `%USERPROFILE%\.ecologger-analysis\`
+
+## 配る形を作る
+
+```
+python tools/build_exe.py           exe のフォルダーと zip を dist/ に作る（1分ほど。初めは .venv-build を作る）
+python tools/build_exe.py --check   作った exe が起きて画面を返すかだけ確かめる
+```
+
+- 1つのファイルにまとめる形（`--onefile`）にせず、フォルダーの形を zip で配る（起動が速く、ウイルス対策に止められにくい）
+- 版は `ecoanalysis/__init__.py` の `__version__`。zip の名前に入る
+
+## 動かし方（開発）
 
 ```
 python -m venv .venv
@@ -20,7 +41,7 @@ python -m venv .venv
 ```
 
 - 専用の窓で開く（pywebview。表示はWindowsに入っている Microsoft Edge WebView2 ランタイム）
-- `--browser` を付けると、いつものブラウザで開く（開発用。WebView2 が無いときの逃げ道）
+- `--browser` を付けると、いつものブラウザで開く（開発用。WebView2 が無いときはこちらに自動で切り替わる）。`--port` で待つ番号を決められる
 - 「走行を開く…」で走行のフォルダー（`.ecorun`）を選ぶ。別の日の走行も続けて開ける。最近開いたものは上の一覧から開ける
 - 周の表は「コースの線で切った周」（ふだん）と「ロガーの数え」を切り替えられる。ベストとの差は、同じコースの開いている走行どうしで比べる
 - 周の表で周を選ぶ（8周まで）と、グラフに重ねて出す。横軸は距離と時間を切り替えられ、2周以上なら基準の周（ふだんは一番速い周）とのタイムの差も出す。ホイールで拡大、ドラッグで移動、ダブルクリックで全体
@@ -33,7 +54,8 @@ python -m venv .venv
 ## 作り
 
 - `ecoanalysis/server.py`：画面と裏の処理をつなぐローカルのHTTPサーバー（127.0.0.1だけで待つ）。動画は `/media/` から、開いている走行の動画だけを途中から読める形（Range、一度に8MBまで）で渡す
-- `ecoanalysis/app.py`：入口。サーバーを立てて pywebview の窓で開く
+- `ecoanalysis/app.py`：入口。サーバーを立てて pywebview の窓で開く。WebView2 が無ければブラウザで開き、画面からの知らせ（3秒ごと）が途絶えたら終わる。開いている間は `~/.ecologger-analysis/running.json` に番号を置き、2つ目の起動は走行をそちらへ渡して（`/api/handover`）終わる。画面は `rev` が変わったのを見て一覧を読み直す
+- `tools/build_exe.py`・`tools/exe_main.py`：配る形（PyInstaller）
 - `ecoanalysis/session.py`：走行データ（ecorun）を読み、形が決まりどおりかを確かめる
 - `ecoanalysis/laps.py`：コースの線で、測位から周を切り直す（線を越えた時刻＝線の手前と先の2点から補った値）。ロガーが数えた周と並べて出す
 - `ecoanalysis/overlay.py`：選んだ周を重ねる。距離は基準の周の走った線に沿った距離で、ほかの周は測位の点を基準の線へ投影して合わせる（同じ場所どうしが並び、タイムの差は「同じ場所に何秒遅れて着いたか」）

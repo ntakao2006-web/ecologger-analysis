@@ -15,3 +15,24 @@
 | typing_extensions | 4.16.0 | PSF-2.0 | OK |
 
 画面の表示には、Windowsに入っている Microsoft Edge WebView2 ランタイムを使う（アプリには同梱していない）。
+
+## 配る exe（`tools/build_exe.py`）に入るもの
+
+上の部品のほかに、exe のフォルダー（`_internal/`）には次が入る。どれも配ってよいライセンス。
+
+| もの | 出どころ | ライセンス |
+|---|---|---|
+| Python 本体と標準の部品（`python314.dll`・`base_library.zip`・`*.pyd`） | python.org | PSF-2.0 |
+| OpenSSL（`libcrypto-3.dll`・`libssl-3.dll`） | Python に付属 | Apache-2.0 |
+| libffi・zlib・bzip2・xz・zstd・expat | Python に付属 | MIT・Zlib・BSD 系・パブリックドメイン |
+| Tcl/Tk（`tcl86t.dll`・`tk86t.dll`。フォルダーを選ぶ窓に使う） | Python に付属 | Tcl/Tk License（BSD 系） |
+| `VCRUNTIME140.dll`・`VCRUNTIME140_1.dll` | Microsoft Visual C++ 再頒布可能パッケージ（Python に付属） | Microsoft の再頒布の条件で配ってよい |
+| `Microsoft.Web.WebView2.Core.dll`・`.WinForms.dll`・`WebView2Loader.dll` | WebView2 SDK（pywebview に付属） | WebView2 SDK のライセンス（BSD 系。配ってよい） |
+| `WebBrowserInterop.*.dll`・`Python.Runtime.dll` | pywebview・pythonnet に付属 | BSD・MIT |
+| setuptools（PyInstaller が拾う） | PyPA | MIT |
+
+- **PyInstaller**（exe を作る道具。版 6.22）は GPL-2.0-or-later だが、exe に入る起動の部分（bootloader）には
+  「できた exe をどんなライセンスで配ってもよい」という例外が付いている。PyInstaller 自身のコードは exe に入らない。
+  ふだんの `.venv` には入れず、exe を作るときだけの `.venv-build` に入れる（`tools/check_licenses.py` の対象外）。
+- WebView2 **ランタイム**（Edge の表示エンジン）は同梱しない。Windows 10/11 にはふつう入っている。無い機器ではブラウザで開く。
+
