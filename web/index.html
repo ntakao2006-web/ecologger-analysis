@@ -103,6 +103,11 @@
         <option value="axis">横軸に合わせる</option><option value="space">同じ場所</option><option value="time">同じ時間</option></select></label>
       <label class="refpick" title="カーソルの所（基準の周の車の横）に、周ごとの速さ・基準の線からの横のずれ・タイムの差を出します。2点の距離は、図の上で Shift を押しながらドラッグすると測れます"><input type="checkbox" id="curinfo"> カーソルの数</label>
       <select id="markch" hidden title="いちばん低い所・高い所を拾うチャンネル"></select>
+      <span class="refpick" title="別の日・別の時間帯の走行は、測位の長い間のずれで線が平行に 1〜2 m ずれることがあります。走行を選ぶと、矢印キーで 0.1 m（Shift を押しながらで 1 m）ずつ線を動かせます（北が上）。動かした量は走行ごとに手元に残り、タイムの差・横のずれはそのあとで計算します。周の切り方・コースの線は動かしません">ずらす
+        <select id="shiftsel"></select>
+        <span id="shiftval" class="shiftval" hidden></span>
+        <button id="shiftauto" type="button" hidden title="選んだこの走行の周の線を、基準の周の線へ、横のずれが一番小さくなるように平行に動かします（走る線が違う所も平均に入るので、航空写真の上でも確かめてください）">基準に合わせる</button>
+        <button id="shiftzero" type="button" hidden>戻す</button></span>
     </div>
     <div id="lineedit" class="lineedit" hidden>
       <div class="row">直す線 <select id="linetarget"></select>

@@ -148,6 +148,22 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.api('overlay', {'laps': [], 'mark': ['x']})[0], 400)
         self.api('close', {'id': sid})
 
+    def test_shift_api(self):
+        sid = self.api('open', {'path': str(self.sample)})[1]['session']['id']
+        code, j = self.api('shift/set', {'id': sid, 'e': 0.25, 'n': -1})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(j['shift'], [0.25, -1.0])
+        code, j = self.api('overlay', {'laps': [{'id': sid, 'lap': 1}, {'id': sid, 'lap': 2}], 'channels': []})
+        self.assertEqual([x['shift'] for x in j['laps']], [[0.25, -1.0], [0.25, -1.0]])
+        self.assertEqual(self.api('shift/set', {'id': sid, 'e': 'x', 'n': 0})[0], 400)
+        self.assertEqual(self.api('shift/set', {'id': 's999', 'e': 0, 'n': 0})[0], 404)
+        code, j = self.api('shift/auto', {'id': sid, 'laps': [{'id': sid, 'lap': 1}, {'id': sid, 'lap': 2}], 'ref': 0})
+        self.assertEqual(code, 400)                     # 基準の周の走行は自動では動かさない
+        self.assertIn('基準の周の走行', j['error'])
+        self.assertEqual(self.api('shift/auto', {'id': sid, 'laps': []})[0], 400)
+        self.assertEqual(self.api('shift/set', {'id': sid, 'e': 0, 'n': 0})[1]['shift'], [0.0, 0.0])
+        self.api('close', {'id': sid})
+
     def test_outline(self):
         # コース図（SP-10-19）：ネットへは出さない（地図は 404、写真は「無い」を返す偽物）
         class NoPhotos:

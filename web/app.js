@@ -2,7 +2,8 @@
 'use strict';
 
 const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 'dist', channels: null, ref: '', colors: new Map(), req: 0,
-                overlay: null, refSession: null, draft: null, outedit: null, formulas: [], help: null, editing: null, rev: null, notice: 0 };
+                overlay: null, refSession: null, draft: null, outedit: null, formulas: [], help: null, editing: null, rev: null, notice: 0,
+                shiftSid: null, shiftWant: null };
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
 const SEC_LAPS = 4;            // 区間の表に並べる周の数
 const SLOW_PCT = 5;            // 平均の周で外す遅さ（裏の sections.SLOW_RATIO と同じ）
@@ -807,19 +808,19 @@ async function renderPicked() {
   $('mapEmpty').hidden = !empty;
   if (empty) {
     Chart.clear(); CourseMap.clear(); VideoPane.clear(); GCircle.clear(); $('gEmpty').hidden = false; state.overlay = null; state.refSession = null; showVideo(0);
-    $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; renderLineControls(); renderSections(); return;
+    $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; renderLineControls(); renderSections(); renderShiftControls(); return;
   }
   const meta = channelMeta(picks);
   state.meta = meta;
   renderChannelList(meta);
   renderRefList(picks);
   renderPaintControls(meta);
-  const ref = state.ref ? picks.findIndex((p) => p.key === state.ref) : null;
+  const ref = refIndex(picks);
   const req = ++state.req;
   let j;
   try {
     j = await api('overlay', { laps: picks.map((p) => ({ id: p.id, lap: p.lap })), mode: state.mode,
-                               channels: state.channels.filter((n) => meta.has(n)), ref: ref === null || ref < 0 ? null : ref,
+                               channels: state.channels.filter((n) => meta.has(n)), ref,
                                paint: state.paint.mode === 'value' ? state.paint.ch : null, mark: state.paint.markCh,
                                gsrc: state.gsrc });
   } catch (e) { status('裏の処理とつながっていません', 'ng'); return; }
@@ -845,8 +846,102 @@ async function renderPicked() {
   VideoPane.cursor(Chart.cursor(), 'pin');
   renderLineControls();
   renderSections();
+  renderShiftControls();
   updateMarks();
 }
+
+// 基準の周の番号（選んだ周の並びの中。決めていなければ null＝一番速い周）
+function refIndex(picks) {
+  const i = state.ref ? picks.findIndex((p) => p.key === state.ref) : -1;
+  return i < 0 ? null : i;
+}
+
+// ---------------------------------------------------------------- 走行の線の平行移動（SP-10-17。仕様 3-6）
+// 「ずらす」で走行を選ぶと、矢印キーで 0.1 m（Shift で 1 m）ずつ線を動かす（北が上）。押し終わって少ししてから裏へ送り、
+// 重ね合わせを頼み直す。「基準に合わせる」は、その走行の選んだ周の線を基準の周の線へ横のずれが最小になるよう動かす
+function shiftOf(sid) {
+  if (state.shiftWant && state.shiftWant.id === sid) return [state.shiftWant.e, state.shiftWant.n];
+  const l = state.overlay && state.overlay.laps.find((x) => x.key.startsWith(sid + ':'));
+  return l && l.shift ? l.shift : [0, 0];
+}
+function fmtShift(v) { return `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(2)}`; }
+function renderShiftControls() {
+  const sel = $('shiftsel'), j = state.overlay;
+  const ids = j ? [...new Set(j.laps.map((l) => l.key.split(':')[0]))] : [];
+  if (state.shiftSid && !ids.includes(state.shiftSid)) state.shiftSid = null;
+  sel.textContent = '';
+  sel.append(el('option', { value: '' }, '動かさない'));
+  for (const id of ids) {
+    const s = state.sessions.find((x) => x.id === id), [e, n] = shiftOf(id);
+    sel.append(el('option', { value: id }, (s ? s.title : id) + (e || n ? `（東 ${fmtShift(e)}・北 ${fmtShift(n)} m）` : '')));
+  }
+  sel.value = state.shiftSid || '';
+  sel.disabled = !j || !j.distance;
+  const on = !!state.shiftSid, [e, n] = on ? shiftOf(state.shiftSid) : [0, 0];
+  $('shiftval').hidden = $('shiftauto').hidden = $('shiftzero').hidden = !on;
+  $('shiftval').textContent = `東 ${fmtShift(e)} m・北 ${fmtShift(n)} m`;
+  const isRef = on && state.refSession && state.refSession.id === state.shiftSid;
+  $('shiftauto').disabled = isRef;
+  $('shiftauto').title = isRef ? '基準の周の走行は、ほかの走行を合わせる相手なので自動では動かせません（矢印キーなら動かせます）'
+    : '選んだこの走行の周の線を、基準の周の線へ、横のずれが一番小さくなるように平行に動かします（走る線が違う所も平均に入るので、航空写真の上でも確かめてください）';
+  $('shiftzero').disabled = !e && !n;
+}
+let shiftTimer = 0;
+async function sendShift() {
+  const w = state.shiftWant;
+  if (!w) return;
+  let j;
+  try { j = await api('shift/set', { id: w.id, e: w.e, n: w.n }); } catch (err) { status('裏の処理とつながっていません', 'ng'); return; }
+  if (state.shiftWant === w) state.shiftWant = null;
+  if (!j.ok) { status(j.error, 'ng'); renderShiftControls(); return; }
+  state.rev = j.rev;
+  await renderPicked();
+}
+function nudgeShift(de, dn) {
+  const id = state.shiftSid;
+  if (!id) return;
+  const [e, n] = shiftOf(id);
+  state.shiftWant = { id, e: Math.round((e + de) * 100) / 100, n: Math.round((n + dn) * 100) / 100 };
+  renderShiftControls();
+  clearTimeout(shiftTimer);
+  shiftTimer = setTimeout(sendShift, 250);
+}
+$('shiftsel').onchange = (e) => {
+  state.shiftSid = e.target.value || null;
+  e.target.blur();                    // 矢印キーを選ぶ欄でなく線へ
+  renderShiftControls();
+  if (state.shiftSid) status('矢印キーで線を 0.1 m、Shift を押しながらで 1 m 動かします（北が上）', 'ok');
+};
+$('shiftzero').onclick = () => {
+  if (!state.shiftSid) return;
+  clearTimeout(shiftTimer);
+  state.shiftWant = { id: state.shiftSid, e: 0, n: 0 };
+  sendShift();
+};
+$('shiftauto').onclick = async () => {
+  const id = state.shiftSid, picks = pickedLaps();
+  if (!id || !picks.length) return;
+  clearTimeout(shiftTimer);
+  if (state.shiftWant) await sendShift();
+  let j;
+  try { j = await api('shift/auto', { id, laps: picks.map((p) => ({ id: p.id, lap: p.lap })), mode: state.mode, ref: refIndex(picks) }); }
+  catch (err) { status('裏の処理とつながっていません', 'ng'); return; }
+  if (!j.ok) { status(j.error, 'ng'); return; }
+  state.rev = j.rev;
+  status(`基準の周の線へ合わせました：東 ${fmtShift(j.shift[0])} m・北 ${fmtShift(j.shift[1])} m（${j.laps}周の、基準の線からの横のずれの中央 ${j.before.toFixed(2)} → ${j.after.toFixed(2)} m）`, 'ok');
+  await renderPicked();
+};
+document.addEventListener('keydown', (e) => {
+  if (!state.shiftSid || state.outedit || state.draft || state.secdraft || document.querySelector('dialog[open]')) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable || (t.classList && t.classList.contains('gutter')))) return;
+  const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
+  if (!d) return;
+  e.preventDefault();
+  const step = e.shiftKey ? 1 : 0.1;
+  nudgeShift(d[0] * step, d[1] * step);
+});
 
 // コース図（道路の縁）：基準の周の走行のコースで頼む。コースごとに裏が残すので、2回目からはすぐ出る
 async function loadOutline() {

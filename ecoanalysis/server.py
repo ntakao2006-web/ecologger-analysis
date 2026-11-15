@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from . import __version__, dynamics, formula, laps, lines, outline, overlay, sections, session, tiles
+from . import __version__, dynamics, formula, laps, lines, outline, overlay, sections, session, shifts, tiles
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 HOME = Path.home() / '.ecologger-analysis'
@@ -62,6 +62,7 @@ class Store:
         self.mode, self.mode_note = 'window', None   # 'browser'：いつものブラウザで開いている
         self.last_seen = None       # 画面から最後に知らせがあった時刻
         self.lines = lines.Lines(self.home / 'lines.json')
+        self.shifts = shifts.Shifts(self.home / 'shifts.json')    # 走行ごとの線の平行移動（SP-10-17）
         self.formulas = formula.Formulas(self.home / 'channels.json')
         self.tiles = tiles.Tiles(self.home)
         self.outlines = outline.Outlines(self.home, self.tiles)
@@ -191,8 +192,8 @@ class Store:
             return {'ok': True, 'app': 'ecologger-analysis', 'version': __version__, 'rev': self.rev,
                     'mode': self.mode, 'mode_note': self.mode_note, 'notice': self.notice}
 
-    def overlay(self, picks, mode, channels, ref=None, paint=None, mark='Speed', gsrc=None):
-        """picks：[{id, lap}]。mode：'app'（コースの線で切った周）か 'logger'。周が見つからなければ KeyError"""
+    def _items(self, picks, mode):
+        """picks：[{id, lap}] → overlay.compare の items（走行の平行移動つき）。周が見つからなければ KeyError"""
         items = []
         with self.lock:
             for p in picks:
@@ -205,7 +206,12 @@ class Store:
                 if lap is None:
                     raise KeyError(f'{it["session"].title} に {p.get("lap")}周目が無い')
                 items.append({'key': f'{p["id"]}:{lap["lap"]}', 'label': f'{it["session"].title} {lap["lap"]}周',
-                              'session': it['session'], 'lap': lap, 'sid': p['id']})
+                              'session': it['session'], 'lap': lap, 'sid': p['id'], 'shift': self.shifts.get(it['key'])})
+        return items
+
+    def overlay(self, picks, mode, channels, ref=None, paint=None, mark='Speed', gsrc=None):
+        """picks：[{id, lap}]。mode：'app'（コースの線で切った周）か 'logger'。周が見つからなければ KeyError"""
+        items = self._items(picks, mode)
         compiled = self.formulas.compiled()
 
         def calc(s, rows, names):
@@ -213,7 +219,41 @@ class Store:
         out = overlay.compare(items, channels, ref, calc, paint, mark, gsrc)
         for item, lap in zip(items, out['laps']):
             lap['video'] = lap_videos(item['sid'], item['session'], item['lap'])
+            lap['shift'] = list(item['shift'])
         return out
+
+    def _shift_key(self, sid):
+        with self.lock:
+            it = self.items.get(sid)
+        if it is None:
+            raise KeyError(f'開いていない走行：{sid!r}'[:200])
+        return it['key']
+
+    def set_shift(self, sid, e, n):
+        """走行の線を東へ e・北へ n m 動かす（0, 0 で戻す）。ShiftError・KeyError"""
+        e, n = self.shifts.set(self._shift_key(sid), e, n)
+        with self.lock:
+            self.rev += 1
+        return {'id': sid, 'shift': [e, n]}
+
+    def auto_shift(self, sid, picks, mode, ref=None):
+        """選んだ周のうち走行 sid の周を、基準の周の線へ合わせて覚える（SP-10-17）。ValueError・KeyError"""
+        key = self._shift_key(sid)
+        items = self._items(picks, mode)
+        if ref is None or not 0 <= ref < len(items):
+            ref = min(range(len(items)), key=lambda i: items[i]['lap']['time_s']) if items else None
+        if ref is None:
+            raise ValueError('周を選んでください')
+        if items[ref]['sid'] == sid:
+            raise ValueError('基準の周の走行は、ほかを合わせる相手なので自動では動かせません（矢印キーなら動かせます）')
+        target = [i for i, x in enumerate(items) if x['sid'] == sid]
+        if not target:
+            raise ValueError('その走行の周を選んでいません')
+        r = overlay.align(items, ref, target)
+        e, n = self.shifts.set(key, r['e'], r['n'], how='auto')
+        with self.lock:
+            self.rev += 1
+        return {'id': sid, 'shift': [e, n], 'before': r['before'], 'after': r['after'], 'laps': r['laps'], 'from': r['from']}
 
     def lap_stats(self, sid, mode, channels):
         """周ごとのチャンネルの最大・最小・平均（SP-10-39。周の表の「値」）。
@@ -734,6 +774,22 @@ class Handler(BaseHTTPRequestHandler):
             except lines.LineError as e:
                 return self._json({'ok': False, 'error': str(e)}, 400)
             return self._json({'ok': True, 'sessions': self.store.list(), 'rev': self.store.rev})
+        if path in ('/api/shift/set', '/api/shift/auto'):   # 走行の線の平行移動（SP-10-17）
+            try:
+                if path == '/api/shift/set':
+                    r = self.store.set_shift(body.get('id'), body.get('e'), body.get('n'))
+                else:
+                    picks = body.get('laps')
+                    if not isinstance(picks, list) or not picks:
+                        return self._json({'ok': False, 'error': '周を選んでください'}, 400)
+                    ref = body.get('ref')
+                    r = self.store.auto_shift(body.get('id'), picks[:12], body.get('mode', 'app'),
+                                              ref if isinstance(ref, int) and not isinstance(ref, bool) else None)
+            except KeyError as e:
+                return self._json({'ok': False, 'error': str(e.args[0] if e.args else e)}, 404)
+            except (shifts.ShiftError, ValueError) as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
+            return self._json({'ok': True, **r, 'rev': self.store.rev})
         if path.startswith('/api/lines/'):
             try:
                 sessions = self.store.set_lines(path.rsplit('/', 1)[1], body.get('course'), body.get('name'),

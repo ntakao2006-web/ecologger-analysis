@@ -38,8 +38,9 @@ def _xy(lat, lon, origin):
             (np.asarray(lat, float) - lat0) * EARTH_M_PER_DEG)
 
 
-def track(gnss, start, end, origin):
-    """周の測位の点（始まり・終わりの時刻の位置を補って両端に足す）。(周の頭からの秒, x, y)。測位が足りなければ None"""
+def track(gnss, start, end, origin, shift=None):
+    """周の測位の点（始まり・終わりの時刻の位置を補って両端に足す）。(周の頭からの秒, x, y)。測位が足りなければ None
+    shift：走行の平行移動 (東 m, 北 m)（SP-10-17）。x・y に足す"""
     if gnss is None:
         return None
     t = np.asarray(gnss['t'], float)
@@ -53,6 +54,8 @@ def track(gnss, start, end, origin):
     la = np.interp(ts, t, lat)
     lo = np.interp(ts, t, lon)
     x, y = _xy(la, lo, origin)
+    if shift:
+        x, y = x + shift[0], y + shift[1]
     return ts - start, x, y
 
 
@@ -325,7 +328,7 @@ def _envelope(rows):
 
 
 def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc=None):
-    """items：[{key, label, session, lap}]（lap は {start, end, time_s}）。ref：基準の周の番号（無ければ一番速い周）
+    """items：[{key, label, session, lap, shift?}]（lap は {start, end, time_s}。shift は走行の平行移動 (東 m, 北 m)）。ref：基準の周の番号（無ければ一番速い周）
     calc：計算チャンネル。calc(session, rows, names) → (値 名前→rows の行の配列, 計算できない理由 名前→文)。
     周の行だけで計算する（積分は周の頭で0から）。
     paint：コース図の線を塗るチャンネル（線の点ごとの値を track.v に入れる）。mark：極大・極小の印を拾うチャンネル
@@ -347,7 +350,7 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc
     if g is not None and len(g['lat']):
         k = int(np.nanargmin(np.abs(np.asarray(g['t']) - r['lap']['start'])))
         origin = (float(g['lat'][k]), float(g['lon'][k]))
-    ref_track = track(g, r['lap']['start'], r['lap']['end'], origin) if origin else None
+    ref_track = track(g, r['lap']['start'], r['lap']['end'], origin, r.get('shift')) if origin else None
     distance = ref_track is not None
     if distance:
         rt, rx, ry = ref_track
@@ -378,7 +381,7 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc
                 ft, fx, fy, fs = rt, rx, ry, rs
                 off = np.zeros(len(rt))
             else:
-                tr = track(s_obj.gnss, a, b, origin)
+                tr = track(s_obj.gnss, a, b, origin, it.get('shift'))
                 if tr is not None:
                     ft, fx, fy = tr
                     fs, off = project(rx, ry, rs, fx, fy, lateral=True)
@@ -411,3 +414,71 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc
             'paint': paint, 'mark': mark, 'friction': friction,
             'origin': list(origin) if distance else None,
             'grid': _nums(grid, 1) if distance else [], 'ref_t': _nums(ref_t_at, 3) if distance else []}
+
+
+ALIGN_MAX_OFF = 8.0       # 基準に合わせるとき、基準の線からこれより離れた点は使わない（ピットの出入り・コースの外）
+ALIGN_ROUNDS = 12         # 投影し直して合わせ直す回数
+ALIGN_FLOOR_M = 0.2       # 重みの下限（横のずれの絶対値の和を小さくする重み 1/|ずれ| の、0 に近い所の止め）
+
+
+def align(items, ref, target):
+    """「基準の走行に合わせる」（SP-10-17）：target の番号の周（同じ走行の周）の線を、基準の周の線へ、
+    横のずれの絶対値の和が最小になる平行移動で合わせる（重みを 1/|ずれ| にして解き直す。二乗の和にすると、
+    走る線が本当に違う所の数 m に引っぱられて、ほかの所の重なりが悪くなる）。動かす量は基準の周の線の法線の向きにしか効かないので、
+    曲がった所がある周なら東・北の両方が決まる。返す値：{e, n（走行の動かす量の合計 m）, before, after（横のずれの絶対値の中央 m）,
+    points, laps}。合わせられなければ ValueError"""
+    if ref is None or not 0 <= ref < len(items):
+        ref = min(range(len(items)), key=lambda i: items[i]['lap']['time_s'])
+    r = items[ref]
+    g = r['session'].gnss
+    if g is None or not len(g['lat']):
+        raise ValueError('基準の周に測位がありません')
+    k = int(np.nanargmin(np.abs(np.asarray(g['t']) - r['lap']['start'])))
+    origin = (float(g['lat'][k]), float(g['lon'][k]))
+    rtr = track(g, r['lap']['start'], r['lap']['end'], origin, r.get('shift'))
+    if rtr is None:
+        raise ValueError('基準の周の測位が足りません')
+    _, rx, ry = rtr
+    rs = cumulative(rx, ry)
+    dx, dy = np.gradient(rx), np.gradient(ry)
+    L = np.hypot(dx, dy)
+    L[L == 0] = 1
+    nx, ny = dy / L, -dx / L                 # 進む向きの右
+    raw = []
+    for i in target:
+        it = items[i]
+        tr = track(it['session'].gnss, it['lap']['start'], it['lap']['end'], origin)   # 動かす前の線
+        if tr is not None:
+            raw.append(tr)
+    if not raw:
+        raise ValueError('合わせる周の測位が足りません')
+    base = tuple(items[target[0]].get('shift') or (0.0, 0.0))
+    e, n = base
+    before = None
+    for _ in range(ALIGN_ROUNDS):
+        rows_a, rows_b, offs = [], [], []
+        for _, fx, fy in raw:
+            fs, off = project(rx, ry, rs, fx + e, fy + n, lateral=True)
+            j = np.clip(np.searchsorted(rs, fs), 0, len(rs) - 1)
+            ok = np.abs(off) < ALIGN_MAX_OFF
+            rows_a.append(np.stack([nx[j][ok], ny[j][ok]], 1))
+            rows_b.append(off[ok])
+            offs.append(off[ok])
+        A, b = np.concatenate(rows_a), np.concatenate(rows_b)
+        if len(b) < 50:
+            raise ValueError('基準の線の近くを通った点が少なすぎます（同じコースの周か確かめてください）')
+        if before is None:
+            before = float(np.median(np.abs(b)))
+        if np.linalg.cond(A.T @ A) > 1e6:
+            raise ValueError('まっすぐな所しかなく、向きが決まりません')
+        w = np.sqrt(1.0 / np.maximum(np.abs(b), ALIGN_FLOOR_M))
+        sol = np.linalg.lstsq(A * w[:, None], b * w, rcond=None)[0]
+        # 点が右（＋）にずれていれば、左へ（法線の逆へ）動かす
+        e, n = e - float(sol[0]), n - float(sol[1])
+    after = []
+    for _, fx, fy in raw:
+        _, off = project(rx, ry, rs, fx + e, fy + n, lateral=True)
+        after.append(off[np.abs(off) < ALIGN_MAX_OFF])
+    after = np.concatenate(after)
+    return {'e': e, 'n': n, 'before': round(before, 2), 'after': round(float(np.median(np.abs(after))), 2),
+            'points': int(len(after)), 'laps': len(raw), 'from': list(base)}
