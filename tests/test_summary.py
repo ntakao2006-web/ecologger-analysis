@@ -29,6 +29,16 @@ const r = { id: 's1', laps: [
 out.oppBest = S.opportunities([r], 'best');
 out.oppMean = S.opportunities([r], 'mean');
 out.oppNone = S.opportunities([{ id: 'x', laps: [L(1, 60, [30, 30], [])] }], 'best');
+// 区間の中の損得：0〜300 m。比べる周は 100〜150 m（ブレーキ）で 0.1 秒、200〜300 m（立ち上がり）で 0.2 秒、ベストの周より遅れる
+const grid = [], pd = [], bd = [];
+for (let x = 0; x <= 400; x += 2) {
+  grid.push(x); bd.push(0.01 * x / 100);
+  pd.push(0.01 * x / 100 + 0.1 * Math.min(Math.max((x - 100) / 50, 0), 1) + 0.2 * Math.min(Math.max((x - 200) / 100, 0), 1));
+}
+const mk = [{ k: 'on', s: 90 }, { k: 'off', s: 160 }, { k: 'min', s: 180 }];
+out.ph = S.phases(grid, pd, bd, mk, 50, 300, 140);        // ボトム 190 m
+out.phTrail = S.phases(grid, pd, bd, mk, 50, 300, 60);    // ボトム 110 m（ブレーキを離す前）
+out.phNone = S.phases(grid, pd, bd, [], 50, 300, null);
 console.log(JSON.stringify(out));
 '''
 
@@ -92,6 +102,14 @@ class SummaryTest(unittest.TestCase):
         self.assertAlmostEqual(top['partnerTime'], (20.0 + 20.6 + 20.2) / 3)
         self.assertAlmostEqual(top['brake'], 0 - 1.0)                       # ベストの周 0 m、平均 (0+2+1)/3
         self.assertEqual(o['oppNone']['items'], [])
+        ph = o['ph']
+        self.assertEqual([(x['a'], x['z']) for x in ph], [(50, 160), (160, 190), (190, 300)])
+        self.assertAlmostEqual(ph[0]['lost'], 0.1, places=6)
+        self.assertAlmostEqual(ph[1]['lost'], 0.0, places=6)
+        self.assertAlmostEqual(ph[2]['lost'], 0.2, places=6)
+        self.assertIsNone(o['phTrail'][1]['lost'])                          # 旋回は長さ0
+        self.assertAlmostEqual(o['phTrail'][0]['lost'] + o['phTrail'][2]['lost'], 0.3, places=6)
+        self.assertIsNone(o['phNone'])
 
 
 if __name__ == '__main__':

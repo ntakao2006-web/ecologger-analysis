@@ -233,3 +233,7 @@ button.primary:disabled { opacity: 0.45; }
 .oppno { display: inline-block; width: 18px; height: 18px; line-height: 18px; border-radius: 50%; background: #111827; color: #fff; border: 1px solid #fff; text-align: center; font-weight: 600; font-size: 11px; }
 .opploss { color: var(--ng); }
 .oppnums { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; padding-left: 28px; }
+.oppphases { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding-left: 28px; }
+.oppphases .phase { padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); }
+.oppphases .phase.loss { color: #fff; background: var(--ng); border-color: var(--ng); }
+.oppphases .phase.gain { color: #fff; background: var(--ok); border-color: var(--ok); }

@@ -78,8 +78,37 @@ const RunSummary = (() => {
              total: items.reduce((a, x) => a + Math.max(0, x.loss), 0), sections: n, items: top };
   }
 
+  // 区間の中の損得（SP-10-42）。grid：基準の周の距離の刻み、pd・bd：比べる周・その区間のベストの周の、基準の周とのタイムの差（grid の上）、
+  // marks：比べる周の印 [{k: 'on'|'off'|…, s}]、head・end：区間の頭と終わり（基準の周の距離）、apexAt：比べる周のボトムの区間の頭からの距離。
+  // 区間を [頭, ブレーキを離した所]・[離した所, ボトム]・[ボトム, 終わり] に分け、それぞれで比べる周が失った秒（＋損・−得）。
+  // ボトムがブレーキを離す前なら旋回は長さ0（lost は null）。離した所もボトムも分からなければ null
+  function phases(grid, pd, bd, marks, head, end, apexAt) {
+    if (!grid || !pd || !bd || !(end > head)) return null;
+    const ms = (marks || []).filter((m) => has(m.s)).sort((x, y) => x.s - y.s);
+    const on = ms.find((m) => m.k === 'on' && m.s >= head - 40 && m.s <= (head + end) / 2);
+    const off = ms.find((m) => m.k === 'off' && m.s > (on ? on.s : head) && m.s < end);
+    const bottom = has(apexAt) ? head + apexAt : null;
+    const b1 = off ? off.s : bottom;
+    if (b1 === null || b1 <= head || b1 >= end) return null;
+    const b2 = bottom !== null ? Math.min(Math.max(b1, bottom), end) : b1;
+    const D = (d, x) => {
+      let lo = 0, hi = grid.length - 1;
+      if (x <= grid[0]) return d[0];
+      if (x >= grid[hi]) return d[hi];
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (grid[m] <= x) lo = m; else hi = m; }
+      const u = d[lo], v = d[hi];
+      if (!has(u) || !has(v)) return has(u) ? u : has(v) ? v : null;
+      return u + (v - u) * (x - grid[lo]) / (grid[hi] - grid[lo]);
+    };
+    const lost = (a, z) => {
+      const x = [D(pd, z), D(pd, a), D(bd, z), D(bd, a)];
+      return x.some((v) => !has(v)) ? null : (x[0] - x[1]) - (x[2] - x[3]);
+    };
+    return [[head, b1], [b1, b2], [b2, end]].map(([a, z]) => ({ a, z, lost: z - a < 1 ? null : lost(a, z) }));
+  }
+
   return {
-    VERDICT, BIG_GAP_S, SLOW_X, opportunities,
+    VERDICT, BIG_GAP_S, SLOW_X, opportunities, phases,
     // runs：[{laps: [{time_s, gap?, splits?, sectors?}], rolling: {time_s} | null}]（まとめに使う走行）
     // 返す値：{n（使った周）, best, theory, theoryKind 'splits'|'sectors'|null, rolling, gapToTheory, top3, top5, verdict, bigGap}
     of(runs) {

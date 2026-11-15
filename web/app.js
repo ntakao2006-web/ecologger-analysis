@@ -490,7 +490,8 @@ function oppBlock(s, n) {
       el('span', { class: 'oppname' }, `区間${it.i + 1}${names[it.i] ? ' ' + names[it.i] : ''}`),
       el('b', { class: 'opploss' }, `${it.loss.toFixed(3)} 秒`),
       el('span', { class: 'note' }, `ベスト ${lapName(it.bestLap)} ${it.bestTime.toFixed(3)} ／ ${lapName(it.partnerLap)} ${it.partnerTime.toFixed(3)}`),
-      el('div', { class: 'oppnums' }, el('span', { class: 'note' }, `${lapName(it.bestLap)}は`), ...nums));
+      el('div', { class: 'oppnums' }, el('span', { class: 'note' }, `${lapName(it.bestLap)}は`), ...nums),
+      phaseRow(it, r, lapName));
     row.onclick = () => goSection(it.i, n);
     wrap.append(row);
   });
@@ -498,6 +499,39 @@ function oppBlock(s, n) {
   wrap.append(el('p', { class: 'note' }, `区間ごとの、ベストとの差の合計 ${o.total.toFixed(3)} 秒（${o.sections}区間。${partner} − 区間ごとのベストの和）。数はその区間のベストの周から見た違い`));
   CourseMap.setHighlights(state.oppMap ? hl : []);
   return wrap;
+}
+
+// 伸びしろの区間の中の損得（SP-10-42・仕様 3-7）：比べる周の印で区間を「ブレーキ（区間の頭〜ブレーキを離した所）」
+// 「旋回（離した所〜ボトム）」「立ち上がり（ボトム〜区間の終わり）」に分け、それぞれで比べる周がその区間のベストの周より失った秒
+// （＋＝損、−＝得）を、重ね合わせのタイムの差（基準の周との差を距離の刻みで）の増え方から出す。2周とも重ねているときだけ
+const PHASES = [['ブレーキ', '区間の頭からブレーキを離した所まで'], ['旋回', 'ブレーキを離した所からボトム（最小の速さ）まで'],
+                ['立ち上がり', 'ボトムから区間の終わり（次の区間の線）まで。ボトムが低くて直線で失った分もここに出ます']];
+function sectionPhases(it, r) {
+  const o = state.overlay;
+  if (!o || !o.distance || !r || !it.partnerLap) return null;
+  const find = (L) => o.laps.find((l) => l.key === `${L.id}:${L.lap}`);
+  const p = find(it.partnerLap), b = find(it.bestLap);
+  if (!p || !b || p === b || !p.delta || !b.delta) return null;
+  const ph = RunSummary.phases(o.grid, p.delta, b.delta, p.marks, r[0], r[1], it.partnerApexAt);
+  return ph && ph.map((x, k) => ({ ...x, name: PHASES[k][0], why: PHASES[k][1] }));
+}
+function phaseRow(it, r, lapName) {
+  const ph = sectionPhases(it, r);
+  const box = el('div', { class: 'oppphases' });
+  if (!ph) {
+    box.append(el('span', { class: 'note' }, it.partnerLap
+      ? `区間の中の損得は、${lapName(it.bestLap)}と${lapName(it.partnerLap)}を2周とも重ねると出ます`
+      : '平均の周と比べるときは、区間の中の損得は出しません（平均の周には走った線が無いため）'));
+    return box;
+  }
+  box.append(el('span', { class: 'note' }, `${lapName(it.partnerLap)}の損得`));
+  for (const x of ph) {
+    const v = x.lost;
+    const cls = v === null ? '' : v > 0.0005 ? ' loss' : v < -0.0005 ? ' gain' : '';
+    box.append(el('span', { class: 'phase' + cls, title: `${x.why}（基準の周の ${Math.round(x.a)}〜${Math.round(x.z)} m）。＋は${lapName(it.partnerLap)}が${lapName(it.bestLap)}より失った秒、−は得た秒` },
+      `${x.name} ${v === null ? '—' : (v > 0.0005 ? '+' : v < -0.0005 ? '−' : '') + Math.abs(v).toFixed(3)}`));
+  }
+  return box;
 }
 
 // 伸びしろの区間の、ボトムの所の横のずれの違い（ベストの周 − 比べる周。2周とも重ねていて、相手がベストの周のときだけ）
