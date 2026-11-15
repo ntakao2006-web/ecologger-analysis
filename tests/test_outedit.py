@@ -261,7 +261,8 @@ for (let i = 0; i <= 50; i++) open.push([i * 2, 150]);
 const id = (a, b) => [a, b];
 const geo = { k: 4, nearestTrack: (x, y) => [50, 50] };
 let Y = 0, calls = [], msgs = [];
-const ui = { radius: () => 10, zebraW: () => 1, zebraTaper: () => 0, boardText: () => '', onChange: () => {},
+let kind = 'edge';
+const ui = { radius: () => 10, zebraW: () => 1, zebraTaper: () => 0, boardText: () => '', onChange: () => {}, lineKind: () => kind,
   onTrace: (m, ok) => msgs.push([m, ok]),
   snap: (pts, inside, reach) => {
     calls.push({ inside, reach, n: pts.length });
@@ -297,10 +298,14 @@ const yAt = (pts, x, y0) => pts.filter((p) => Math.abs(p[0] - x) < 0.01 && Math.
   await trace(70, 30, 149, 151);
   L = E.view().lines;
   out.open = { y50: yAt(L[1].pts, 50, 150), y80: yAt(L[1].pts, 80, 150), y20: yAt(L[1].pts, 20, 150), first: L[1].pts[0], last: L[1].pts[L[1].pts.length - 1] };
-  // 遠い所 → 新しい縁
+  // 遠い所 → 新しい線（欄の種類。ピットロードならコースの側は「分からない」で送る）
+  kind = 'pit';
   await trace(0, 40, 300, 300);
+  out.pitInside = calls[calls.length - 1].inside;
   out.added = E.view().lines.length;
   out.addedOpen = E.view().lines[2].closed === false;
+  out.addedKind = E.view().lines[2].kind;                 // なぞるで足した線は、欄で選んだ種類
+  out.oldKinds = [E.view().lines[0].kind, E.view().lines[1].kind];
   // 短すぎる
   const before = calls.length;
   await trace(0, 2, 400, 400);
@@ -315,6 +320,27 @@ const yAt = (pts, x, y0) => pts.filter((p) => Math.abs(p[0] - x) < 0.01 && Math.
   const n0 = JSON.stringify(E.view().lines);
   await trace(20, 60, -1, 0.5);
   out.reject = { same: JSON.stringify(E.view().lines) === n0, msg: msgs[msgs.length - 1] };
+  // 線の種類：押した線を欄の種類に。消すで分けても、つないでも種類は残る。保存の形にも出る
+  E.load({ lines: [ring, open], kinds: ['edge', 'pit'], kerbs: [], boards: [] }, id, ui);
+  out.loadKinds = E.view().lines.map((l) => l.kind);
+  kind = 'other';
+  E.setTool('kind');
+  E.click(50, 150, geo);
+  out.setKind = E.view().lines[1].kind;
+  const nUndo = E.canUndo();
+  E.click(50, 150, geo);                                  // 同じ種類なら何もしない（戻す分も積まない）
+  E.undo();
+  out.kindUndo = { had: nUndo, back: E.view().lines[1].kind };
+  E.redo();
+  E.setTool('erase');
+  E.click(40, 150, geo); E.click(60, 150, geo);
+  out.eraseKinds = E.view().lines.map((l) => l.kind);
+  E.setTool('join');
+  E.click(40, 150, geo); E.click(60, 150, geo);
+  out.joinKinds = E.view().lines.map((l) => l.kind);
+  out.dumpKinds = E.dump(id).kinds;
+  E.load({ lines: [ring], kinds: ['nope'], kerbs: [], boards: [] }, id, ui);
+  out.badKind = E.view().lines[0].kind;
   console.log(JSON.stringify(out));
 })();
 '''
@@ -352,6 +378,16 @@ class TraceTest(unittest.TestCase):
         self.assertTrue(o['reject']['same'])
         self.assertFalse(o['reject']['msg'][1])
         self.assertIn('なぞった線の形が違う', o['reject']['msg'][0])
+        self.assertEqual(o['addedKind'], 'pit')
+        self.assertEqual(o['pitInside'], 0)
+        self.assertEqual(o['oldKinds'], ['edge', 'edge'])                # 種類の無い前の形は、全部コースの縁
+        self.assertEqual(o['loadKinds'], ['edge', 'pit'])
+        self.assertEqual(o['setKind'], 'other')
+        self.assertEqual(o['kindUndo'], {'had': True, 'back': 'pit'})
+        self.assertEqual(o['eraseKinds'], ['edge', 'other', 'other'])
+        self.assertEqual(o['joinKinds'], ['edge', 'other'])
+        self.assertEqual(o['dumpKinds'], ['edge', 'other'])
+        self.assertEqual(o['badKind'], 'edge')
 
 
 if __name__ == '__main__':

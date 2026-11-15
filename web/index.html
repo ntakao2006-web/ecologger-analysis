@@ -110,7 +110,9 @@
         <button type="button" data-tool="zebraAdd" title="キーの 6、または図の上で右ボタンを押したまま左下へ引く">ゼブラを足す</button>
         <button type="button" data-tool="zebraDel" title="キーの 7、または図の上で右ボタンを押したまま左へ引く">ゼブラを消す</button>
         <button type="button" data-tool="board" title="キーの 8、または図の上で右ボタンを押したまま左上へ引く">看板</button>
-        <button type="button" data-tool="trace" title="キーの 9。縁をざっとなぞると、航空写真・地図の縁へ吸い付いた線にします">なぞる</button></div>
+        <button type="button" data-tool="trace" title="キーの 9。縁をざっとなぞると、航空写真・地図の縁へ吸い付いた線にします">なぞる</button>
+        <button type="button" data-tool="kind" title="キーの 0。線を押すと、その線の種類を右の欄で選んだものにします">線の種類</button>
+        <label title="線の種類を変える・なぞるで足すときの種類。ピットロードは破線、その他の舗装（使っていないシケイン・ショートコース・エスケープゾーン）は点線で描きます">種類 <select id="oekind"><option value="edge">コースの縁</option><option value="pit">ピットロード</option><option value="other">その他の舗装</option></select></label></div>
       <div class="row">
         <label title="点を動かすとき、つかんだ点からこの距離の内の点も一緒に動きます（離れるほど少しだけ）。0 ならつかんだ1点だけ。なめらかにするときは、この半分の幅（1 m より細くはしない）でならします">なめらかさ <input id="oeradius" type="number" min="0" max="60" step="1" value="10"> m</label>
         <label title="足すゼブラの帯の幅（足したあとは、点を動かすで外側の端をつかむと所ごとに変えられます）">ゼブラの幅 <input id="oezebraw" type="number" min="0.2" max="5" step="0.1" value="1"> m</label>

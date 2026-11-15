@@ -307,11 +307,17 @@ class OutlineTest(unittest.TestCase):
             {'lines': [ok], 'boards': [{'lat': LAT0, 'lon': LON0, 'text': 'x' * 13}]},
             {'lines': [ok], 'boards': [{'lat': LAT0, 'lon': LON0, 'text': '  '}]},
             {'lines': [ok] * (outline.EDIT_MAX_LINES + 1)},
+            {'lines': [ok], 'kinds': ['pit', 'edge']},                         # 種類の数が線と合わない
+            {'lines': [ok], 'kinds': ['road']},                                # 知らない種類
+            {'lines': [ok], 'kinds': 'pit'},
         ]
         for d in bad:
             with self.assertRaises(outline.OutlineError, msg=str(d)[:60]):
                 outline.check_edit(d)
         self.assertEqual(outline.check_edit({'lines': [ok]})['kerbs'], [])
+        # 線の種類：無ければ全部コースの縁（前に保存したもの）。ピットロード・その他の舗装も持てる
+        self.assertEqual(outline.check_edit({'lines': [ok]})['kinds'], ['edge'])
+        self.assertEqual(outline.check_edit({'lines': [ok, ok, ok], 'kinds': ['edge', 'pit', 'other']})['kinds'], ['edge', 'pit', 'other'])
         # 縁にくっつく形（点ごとの幅・端は 0）と前の形の両方が通る
         k = outline.check_edit({'lines': [ok], 'kerbs': [{'pts': ok, 'ws': [0, 1.234], 'side': -1}, {'w': 1, 'pts': ok}]})['kerbs']
         self.assertEqual(k, [{'pts': ok, 'ws': [0.0, 1.23], 'side': -1}, {'w': 1.0, 'pts': ok}])

@@ -229,7 +229,7 @@ const CourseMap = (() => {
     if (outlineXY && outlineKey === key && outlineXY.src === outline) return outlineXY;
     const xy = (pts) => pts.map((q) => toXY(q[0], q[1]));
     outlineXY = { src: outline,
-                  lines: outline.lines.map((ln) => ({ pts: xy(ln), closed: false })),
+                  lines: outline.lines.map((ln, i) => ({ pts: xy(ln), closed: false, kind: (outline.kinds || [])[i] || 'edge' })),
                   kerbs: (outline.kerbs || []).filter((z) => z && z.pts).map((z) => (Array.isArray(z.ws)
                     ? { pts: xy(z.pts), ws: z.ws, side: z.side < 0 ? -1 : 1 } : { w: z.w || 1, pts: xy(z.pts) })),
                   boards: (outline.boards || []).map((bd) => { const [x, y] = toXY(bd.lat, bd.lon); return { x, y, text: bd.text }; }) };
@@ -248,16 +248,29 @@ const CourseMap = (() => {
     };
     g.save();
     g.lineJoin = 'round'; g.lineCap = 'round';
+    // 線の種類：コースの縁はふだんの線、ピットロードは破線、その他の舗装（使っていないシケイン・エスケープゾーンなど）は点線。
+    // 縁だけが引いて見たときの道の帯になる
+    const edges = o.lines.filter((ln) => !ln.kind || ln.kind === 'edge'), extra = o.lines.filter((ln) => ln.kind === 'pit' || ln.kind === 'other');
     if (photo) {                       // 写真の上：暗い縁取りの上に白
       g.strokeStyle = 'rgba(0, 0, 0, 0.45)'; g.lineWidth = 3.5;
-      for (const ln of o.lines) { path(ln); g.stroke(); }
+      for (const ln of edges) { path(ln); g.stroke(); }
     }
     // 引いて見るとコースの幅が数画素になり、縁が周の線の下に隠れる。そのときは縁を太らせて道の帯にする
     const roadPx = ((outline && outline.width_m && outline.width_m[1]) || 12) * scale(w, h);
     const fat = !photo && roadPx < ROAD_MIN_PX;
     g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.9)' : fat ? (dark ? '#4b5563' : '#d4d9e0') : (dark ? '#6b7280' : '#a3abb6');
     g.lineWidth = photo ? 1.5 : fat ? ROAD_MIN_PX - roadPx + 2 : 2;
-    for (const ln of o.lines) { path(ln); g.stroke(); }
+    for (const ln of edges) { path(ln); g.stroke(); }
+    for (const ln of extra) {
+      const pit = ln.kind === 'pit';
+      if (photo) { g.setLineDash([]); g.strokeStyle = 'rgba(0, 0, 0, 0.45)'; g.lineWidth = 3; path(ln); g.stroke(); }
+      g.setLineDash(pit ? [7, 4] : [2, 4]);
+      g.strokeStyle = photo ? (pit ? 'rgba(253, 224, 71, 0.95)' : 'rgba(255, 255, 255, 0.8)')
+                            : pit ? (dark ? '#d6d3d1' : '#78716c') : (dark ? '#6b7280' : '#a3abb6');
+      g.lineWidth = pit ? 1.6 : 1.3;
+      path(ln); g.stroke();
+    }
+    g.setLineDash([]);
     // ゼブラ：縁に沿った帯（幅は点ごと、端は細る）を、走る向きに1 mおきの赤白で（写真では縞を読み切れないので、ある区間だけを描く）
     if (o.kerbs && o.kerbs.length) {
       const k = scale(w, h);

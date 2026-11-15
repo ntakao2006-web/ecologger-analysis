@@ -17,6 +17,8 @@ const OutlineEditor = (() => {
   const MIN_LEN_M = 1;       // ゼブラはこの長さより短くしない
   const LEGACY_SNAP_M = 1;   // 前の形のゼブラを読むとき、内側の端をこの距離の内の縁へ載せる
   const W_MAX = 5;
+  const KINDS = ['edge', 'pit', 'other'];   // 線の種類：コースの縁・ピットロード・その他の舗装
+  const kindOf = (k) => (KINDS.includes(k) ? k : 'edge');
   const TRACE_STEP_PX = 3;    // なぞる：この画素より動いたら点を足す
   const TRACE_REACH_PX = 24;  // なぞる：横へ探す幅（画面の画素。m に直して裏へ送る）
   const TRACE_ATTACH_PX = 30; // なぞる：両端がこの画素の内に同じ縁があれば、そのあいだを置き換える
@@ -30,6 +32,7 @@ const OutlineEditor = (() => {
     zebraAdd: '縁の上を2か所押すと、そのあいだの縁の外側にゼブラを足します（幅・端の細りは下の欄）。ゼブラは縁にくっつき、縁を動かすと一緒に動きます',
     zebraDel: '消したいゼブラを押します',
     board: '押した所に看板（字は下の欄）を置きます。看板を押すと消します',
+    kind: '線を押すと、その線の種類を「種類」の欄で選んだもの（コースの縁・ピットロード・その他の舗装）にします。サーキットの舗装の全部（使っていないシケイン・ショートコース・エスケープゾーンも）を1枚に描き、走ったレイアウトはコントロールラインの版で分けます。なぞるで足す線も、この欄の種類になります（ピットロードは破線、その他の舗装は点線で描きます）',
     trace: 'コースの縁をマウスでざっとなぞると、近くの縁（航空写真で路面が切れる所・色が変わる所・白線、地図の道路縁）へ吸い付いた線にします。探す幅は画面の倍率で決まり（寄るほど細かく）、縁が見つからない所はなぞったまま。なぞり始めと終わりが同じ縁の近くなら、そのあいだを置き換え（ゼブラも載り直す）、そうでなければ新しい縁として足します',
   };
   // 道具の切り替え：図の上で右ボタンを押したまま引いた向き（上から時計回りに8つ）。数字キーの 1〜8 も同じ順
@@ -38,8 +41,8 @@ const OutlineEditor = (() => {
     ['erase', '消す'], ['zebraAdd', 'ゼブラを足す'], ['zebraDel', 'ゼブラを消す'], ['board', '看板'],
   ];
 
-  let st = null;             // {lines: [{pts, closed}], kerbs: [{pts, ws, side}], boards: [{x, y, text}], undo: [], tool, pend, grab, hover, dirty}
-  let ui = null;             // {radius(), zebraW(), zebraTaper(), boardText(), onChange(), snap(pts, inside, reach) → Promise<{pts, found, shift_m}>, onTrace(msg, ok)}
+  let st = null;             // {lines: [{pts, closed, kind}], kerbs: [{pts, ws, side}], boards: [{x, y, text}], undo: [], tool, pend, grab, hover, dirty}
+  let ui = null;             // {radius(), zebraW(), zebraTaper(), boardText(), lineKind(), onChange(), snap(pts, inside, reach) → Promise<{pts, found, shift_m}>, onTrace(msg, ok)}
 
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const clampW = (w) => (Number.isFinite(w) ? Math.min(W_MAX, Math.max(0, w)) : 1);
@@ -106,11 +109,12 @@ const OutlineEditor = (() => {
   function load(outline, toXY, o) {
     ui = o;
     const xy = (pts) => pts.map((q) => toXY(q[0], q[1]));
-    const lines = (outline.lines || []).map((ln) => {
+    const kinds = Array.isArray(outline.kinds) ? outline.kinds : [];
+    const lines = (outline.lines || []).map((ln, i) => {
       const pts = xy(ln);
       const closed = pts.length > 3 && dist(pts[0], pts[pts.length - 1]) < 0.01;
       if (closed) pts.pop();
-      return { pts, closed };
+      return { pts, closed, kind: kindOf(kinds[i]) };
     });
     const kerbs = (outline.kerbs || []).map((z) => kerbFrom(z, xy, lines)).filter(Boolean);
     const boards = (outline.boards || []).map((b) => { const [x, y] = toXY(b.lat, b.lon); return { x, y, text: b.text }; });
@@ -119,8 +123,10 @@ const OutlineEditor = (() => {
 
   function dump(toLatLon) {
     const ll = (pts) => pts.map((p) => toLatLon(p[0], p[1]));
+    const keep = st.lines.filter((l) => l.pts.length >= 2);
     return {
-      lines: st.lines.filter((l) => l.pts.length >= 2).map((l) => ll(l.closed ? l.pts.concat([l.pts[0]]) : l.pts)),
+      lines: keep.map((l) => ll(l.closed ? l.pts.concat([l.pts[0]]) : l.pts)),
+      kinds: keep.map((l) => kindOf(l.kind)),
       kerbs: st.kerbs.filter((z) => z.pts.length >= 2).map((z) => ({ pts: ll(z.pts), ws: z.ws.map((w) => Math.round(w * 100) / 100), side: z.side })),
       boards: st.boards.map((b) => { const [lat, lon] = toLatLon(b.x, b.y); return { lat, lon, text: b.text }; }),
     };
@@ -415,7 +421,7 @@ const OutlineEditor = (() => {
       const r = it.pts.slice(from).concat(it.pts.slice(0, from));
       pieces = [r.slice(to - from).concat([r[0]])];
     }
-    st.lines.splice(p.idx, 1, ...pieces.filter((x) => x.length >= 2).map((pts) => ({ pts, closed: false })));
+    st.lines.splice(p.idx, 1, ...pieces.filter((x) => x.length >= 2).map((pts) => ({ pts, closed: false, kind: it.kind })));
     return true;
   }
 
@@ -446,7 +452,7 @@ const OutlineEditor = (() => {
     const b = q.end ? B.pts.slice().reverse() : B.pts;   // b の頭へ
     const merged = a.concat(between(a[a.length - 1], b[0]), b);
     const keep = Math.min(p.idx, q.idx), drop = Math.max(p.idx, q.idx);
-    st.lines[keep] = { pts: merged, closed: false };
+    st.lines[keep] = { pts: merged, closed: false, kind: A.kind };
     st.lines.splice(drop, 1);
     return true;
   }
@@ -499,7 +505,7 @@ const OutlineEditor = (() => {
     });
     snapshot();
     if (!best) {
-      st.lines.push({ pts: snapped.map((q) => q.slice()), closed: false });
+      st.lines.push({ pts: snapped.map((q) => q.slice()), closed: false, kind: kindOf(ui && ui.lineKind && ui.lineKind()) });
       changed();
       return { how: 'add' };
     }
@@ -538,11 +544,14 @@ const OutlineEditor = (() => {
     const k = tr.geo.k, mine = st, job = { pts };
     st.busy.push(job);
     if (ui.onTrace) ui.onTrace('吸い付かせています…', true);
-    ui.snap(pts, insideOf(pts, tr.geo), TRACE_REACH_PX / k).then((r) => {
+    // コースの側は走った線で決める。ピットロード・その他の舗装は走った線と関わらないので「分からない」（どちら向きの境目も見る）
+    const inside = kindOf(ui.lineKind && ui.lineKind()) === 'edge' ? insideOf(pts, tr.geo) : 0;
+    ui.snap(pts, inside, TRACE_REACH_PX / k).then((r) => {
       if (st !== mine) return;              // 直すのをやめた・開き直した
       st.busy = st.busy.filter((j) => j !== job);
       const res = applyTrace(r.pts, TRACE_ATTACH_PX / k);
-      if (ui.onTrace) ui.onTrace(`${res.how === 'replace' ? 'そのあいだの縁を置き換えました' : '新しい縁として足しました'}（縁が見つかった所 ${Math.round(r.found * 100)} %、なぞった線から動かした量 ${r.shift_m.toFixed(1)} m。戻すは Ctrl+Z）`, true);
+      const label = { edge: 'コースの縁', pit: 'ピットロード', other: 'その他の舗装' }[kindOf(ui.lineKind && ui.lineKind())];
+      if (ui.onTrace) ui.onTrace(`${res.how === 'replace' ? 'そのあいだの線を置き換えました' : `新しい線（${label}）として足しました`}（縁が見つかった所 ${Math.round(r.found * 100)} %、なぞった線から動かした量 ${r.shift_m.toFixed(1)} m。戻すは Ctrl+Z）`, true);
     }).catch((e) => {
       if (st !== mine) return;
       st.busy = st.busy.filter((j) => j !== job);
@@ -670,6 +679,9 @@ const OutlineEditor = (() => {
       const a = st.pend;
       st.pend = null;
       if (q) done = join(a, q);
+    } else if (t === 'kind') {
+      const p = pickPath(x, y, tol, ['line']), k = kindOf(ui.lineKind && ui.lineKind());
+      if (p && st.lines[p.idx].kind !== k) { snapshot(); st.lines[p.idx].kind = k; done = true; }
     } else if (t === 'zebraDel') {
       const p = pickPath(x, y, tol, ['kerb']);
       if (p) { snapshot(); st.kerbs.splice(p.idx, 1); done = true; }

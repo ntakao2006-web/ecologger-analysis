@@ -16,7 +16,7 @@
 
 - タイルは ~/.ecologger-analysis/tiles/ に残す（写真は tiles.py と同じ置き場）。送るのはタイルの番号だけ
 - できた図はコースごとに ~/.ecologger-analysis/outlines/ に残し、2回目からはすぐ出す
-- ピットロードは作らない（走った周の線を案内にするため）
+- ピットロードは作らない（走った周の線を案内にするため）。エディタで種類を「ピットロード」にした線を手で足す（check_edit の kinds）
 """
 import hashlib
 import io
@@ -205,6 +205,7 @@ EDIT_MAX_POINTS = 200000                # 線・ゼブラの点の数の合計
 EDIT_MAX_KERBS = 1000
 EDIT_MAX_BOARDS = 300
 BOARD_TEXT_MAX = 12
+LINE_KINDS = ('edge', 'pit', 'other')  # 線の種類：コースの縁・ピットロード・その他の舗装（使っていないシケイン・ショートコース・エスケープゾーン）
 
 
 def _check_pts(pts, what):
@@ -223,7 +224,9 @@ def _check_pts(pts, what):
 
 
 def check_edit(data):
-    """手で直したコース図 {lines: [[[lat, lon], …]], kerbs: [{pts, ws, side} か前の形 {w, pts}], boards: [{lat, lon, text}]} の形を確かめて、決まった形にして返す"""
+    """手で直したコース図 {lines: [[[lat, lon], …]], kinds: [線の種類（LINE_KINDS。無ければ全部 'edge'）],
+    kerbs: [{pts, ws, side} か前の形 {w, pts}], boards: [{lat, lon, text}]} の形を確かめて、決まった形にして返す。
+    サーキットの舗装の全部（シケイン・ショートコース・ピットロード）を1枚に描き、レイアウトの違いは線の版で分ける"""
     if not isinstance(data, dict):
         raise OutlineError('形が違う')
     lines_, kerbs_, boards_ = data.get('lines'), data.get('kerbs', []), data.get('boards', [])
@@ -232,6 +235,11 @@ def check_edit(data):
     if len(lines_) > EDIT_MAX_LINES or len(kerbs_) > EDIT_MAX_KERBS or len(boards_) > EDIT_MAX_BOARDS:
         raise OutlineError('数が多すぎる')
     lines_ = [_check_pts(ln, '縁') for ln in lines_]
+    kinds_ = data.get('kinds')
+    if kinds_ is None:
+        kinds_ = ['edge'] * len(lines_)
+    if not isinstance(kinds_, list) or len(kinds_) != len(lines_) or not all(k in LINE_KINDS for k in kinds_):
+        raise OutlineError('線の種類の形が違う')
     out_k = []
     num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
     for k in kerbs_:
@@ -261,7 +269,7 @@ def check_edit(data):
         if not isinstance(text, str) or not text.strip() or len(text) > BOARD_TEXT_MAX:
             raise OutlineError(f'看板の字は{BOARD_TEXT_MAX}字まで')
         out_b.append({'lat': la, 'lon': lo, 'text': text.strip()})
-    return {'lines': lines_, 'kerbs': out_k, 'boards': out_b}
+    return {'lines': lines_, 'kinds': list(kinds_), 'kerbs': out_k, 'boards': out_b}
 
 
 class Outlines:
@@ -353,7 +361,7 @@ class Outlines:
         if not auto:
             e = self.edited(course, lat, lon)
             if e is not None:
-                return {'version': VERSION, 'course': course, 'lines': e['lines'], 'kerbs': e['kerbs'], 'boards': e['boards'],
+                return {'version': VERSION, 'course': course, 'lines': e['lines'], 'kinds': e['kinds'], 'kerbs': e['kerbs'], 'boards': e['boards'],
                         'attribution': ATTRIBUTION, 'complete': True, 'edited': True, 'saved_at': e.get('saved_at'),
                         'width_m': e.get('width_m'), 'share': None, 'laps': laps}
         return self.get_auto(course, lat, lon, rebuild, t_all, lat_all, lon_all, laps)
