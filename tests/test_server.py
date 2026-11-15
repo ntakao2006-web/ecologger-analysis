@@ -206,6 +206,10 @@ class ServerTest(unittest.TestCase):
             for bad in ({'id': sid, 'lap': '2'}, {'id': sid, 'lap': True}, {'id': 1, 'lap': 2}, {'id': sid, 'lap': 99}, {'id': 's999', 'lap': 1}):
                 self.assertEqual(self.api('sections/auto', bad)[0], 400, bad)
             self.assertEqual(self.api('sections/set', {'course': course, 'splits': 'x'})[0], 400)
+            code, j = self.api('sections/set', {'course': course, 'splits': s['splits'], 'names': ['頭', '奥']})   # 名前（SP-10-37）
+            self.assertEqual(code, 200, j)
+            self.assertEqual(next(x for x in j['sessions'] if x['id'] == sid)['split_names'], ['頭', '奥'])
+            self.assertEqual(self.api('sections/set', {'course': course, 'splits': s['splits'], 'names': ['頭']})[0], 400)
             code, j = self.api('sections/set', {'course': course, 'splits': []})
             self.assertEqual(code, 200, j)
             self.assertEqual(next(x for x in j['sessions'] if x['id'] == sid)['splits'], [])

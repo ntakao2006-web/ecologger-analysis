@@ -106,6 +106,7 @@ class Store:
         act = self.lines.active(course) if course else None
         it['line_names'] = self.lines.names(course) if course else []
         splits = self.lines.splits(course) if course else []
+        it['split_names'] = self.lines.split_names(course) if course and splits else []
         if act:
             name, line, sectors = act
             it['laps'], it['line'], it['why'] = laps.for_session(s, line, sectors, splits)
@@ -144,8 +145,8 @@ class Store:
         self._recut_course(course)
         return {'how': found['how'], 'at_m': found['at_m'], 'count': len(found['splits'])}
 
-    def set_splits(self, course, splits):
-        self.lines.set_splits(course, splits)
+    def set_splits(self, course, splits, names=None):
+        self.lines.set_splits(course, splits, names)
         self._recut_course(course)
 
     def set_lines(self, action, course, name=None, line=None, sectors=None):
@@ -461,7 +462,8 @@ def summary(sid, it):
         'clock': m['clock'], 'course': course.get('name'), 'line': it['line'], 'sectors': it['sectors'],
         'line_name': it['line_name'], 'export_line': {'line': course.get('line'), 'sectors': course.get('sectors') or []},
         'line_names': it['line_names'],
-        'sector_count': len(it['sectors']), 'splits': it.get('splits') or [], 'rolling': it.get('rolling'),
+        'sector_count': len(it['sectors']), 'splits': it.get('splits') or [], 'split_names': it.get('split_names') or [],
+        'rolling': it.get('rolling'),
         'channels': m['channels'], 'rows': int(len(s.t)), 'rate_hz': m.get('rate_hz'),
         'gnss': None if g is None else {**(m.get('gnss') or {}), 'points': int(len(g['t']))},
         'videos': len(s.videos), 'notes': m.get('notes') or [], 'load_s': it['load_s'],
@@ -680,9 +682,9 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, ValueError, lines.LineError) as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
             return self._json({'ok': True, 'auto': found, 'sessions': self.store.list(), 'rev': self.store.rev})
-        if path == '/api/sections/set':          # 区間の線を入れ替える（[] で消す）
+        if path == '/api/sections/set':          # 区間の線と名前を入れ替える（[] で消す。SP-10-37 の直し）
             try:
-                self.store.set_splits(body.get('course'), body.get('splits'))
+                self.store.set_splits(body.get('course'), body.get('splits'), body.get('names'))
             except lines.LineError as e:
                 return self._json({'ok': False, 'error': str(e)}, 400)
             return self._json({'ok': True, 'sessions': self.store.list(), 'rev': self.store.rev})

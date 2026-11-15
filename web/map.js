@@ -65,6 +65,7 @@ const CourseMap = (() => {
   function refLap() { return data.laps.find((l) => l.ref && l.track) || data.laps.find((l) => l.track); }
 
   function curKey() { return opts.x() === 'dist' ? 's' : 't'; }
+  function splitEditing() { return !!(opts.splitEditing && opts.splitEditing()); }
   // 周 lap の車の位置（m）。カーソルが無い・周の外なら null
   function carAt(lap) {
     if (cursor === null || !lap || !lap.track) return null;
@@ -73,7 +74,7 @@ const CourseMap = (() => {
   }
   // 追っているなら、図の真ん中を基準の周の車へ（直している・線を置いているとき、車を引いているあいだは動かさない）
   function centerOnCar() {
-    if (!follow || (drag && drag.car) || (editor && editor.active()) || opts.editing()) return;
+    if (!follow || (drag && (drag.car || drag.split)) || (editor && editor.active()) || opts.editing() || splitEditing()) return;
     const p = carAt(refLap());
     if (!p) return;
     if (followZoom) { followZoom = false; if (view.span > FOLLOW_SPAN * 2) view.span = FOLLOW_SPAN; }
@@ -670,8 +671,11 @@ const CourseMap = (() => {
     if (photo) { g.shadowColor = 'rgba(0, 0, 0, 0.9)'; g.shadowBlur = 3; }
     if (L && L.line) drawLine(g, L.line, w, h, ink, 2.5, 'コントロールライン', L.draft);
     (L && L.sectors || []).forEach((s, i) => drawLine(g, s, w, h, ink2, 2, `S${i + 1}｜S${i + 2}`, L.draft));
-    // 区間（コーナー）の線（SP-10-13）。細い破線で、札はその線から始まる区間の番号
-    (L && L.splits || []).forEach((s, i) => drawLine(g, s, w, h, photo ? '#fde68a' : css('--sbest'), 1.5, `区${i + 2}`, true));
+    // 区間（コーナー）の線（SP-10-13）。細い破線で、札はその線から始まる区間の番号（名前があれば名前も）。直しているときは選んだ線を太く
+    (L && L.splits || []).forEach((s, i) => {
+      const sel = L.splitSel === i, label = (L.splitLabels && L.splitLabels[i]) || `区${i + 2}`;
+      drawLine(g, s, w, h, sel ? css('--accent') : photo ? '#fde68a' : css('--sbest'), sel ? 3 : L.splitEdit ? 2 : 1.5, label, !sel);
+    });
     g.shadowBlur = 0; g.shadowColor = 'transparent';
     if (L && L.selected !== null && L.selected !== undefined) {
       const sel = L.selected === 0 ? L.line : L.sectors[L.selected - 1];
@@ -771,8 +775,8 @@ const CourseMap = (() => {
   }
   // 周 lap の線で (x, y)（m）にいちばん近い所の横軸の値（線分へ下ろして間を補う）{v, i, d}。
   // 車を引くときは、前の番号 i0 の前後から探す（近くを並んで走る別の所へ跳ばないように）。そこが 15 m より遠いときだけ全体から
-  function valueNear(lap, x, y, i0) {
-    const t = lap.track, xa = t[curKey()], n = t.x.length;
+  function valueNear(lap, x, y, i0, key) {
+    const t = lap.track, xa = t[key || curKey()], n = t.x.length;
     const search = (lo, hi) => {
       let best = null;
       for (let i = lo; i < hi; i++) {
@@ -789,6 +793,32 @@ const CourseMap = (() => {
     let b = i0 !== null && i0 !== undefined ? search(Math.max(0, i0 - win), Math.min(n - 1, i0 + win)) : null;
     if (!b || b.d > 15) { const all = search(0, n - 1); if (all && (!b || all.d < b.d)) b = all; }
     return b;
+  }
+
+  // 区間を直しているとき、画面の点 (mx, my) から 10 画素の内にある区間の線の番号（無ければ -1）
+  function pickSplit(mx, my, w, h) {
+    const L = opts.lines();
+    let best = -1, bd = 10;
+    (L && L.splits || []).forEach((s, i) => {
+      const [a, b] = ends(s);
+      const [ax, ay] = P(a[0], a[1], w, h), [bx, by] = P(b[0], b[1], w, h);
+      const vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
+      const f = L2 > 0 ? Math.max(0, Math.min(1, ((mx - ax) * vx + (my - ay) * vy) / L2)) : 0;
+      const d = Math.hypot(ax + vx * f - mx, ay + vy * f - my);
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+  // 基準の周の、横軸の値 v（いまの横軸）の所に置く線 {lat, lon, bearing}。周の外なら null
+  function lineAt(v) {
+    const lap = refLap();
+    if (!lap || v === null || v === undefined) return null;
+    const key = curKey(), dv = key === 's' ? 4 : 0.4;
+    const p = posAt(lap.track, key, v);
+    if (!p) return null;
+    const a = posAt(lap.track, key, v - dv) || p, b = posAt(lap.track, key, v + dv) || p;
+    const [lat, lon] = toLatLon(p[0], p[1]);
+    return { lat, lon, bearing: (Math.atan2(b[0] - a[0], b[1] - a[1]) * 180 / Math.PI + 360) % 360 };
   }
 
   function bind() {
@@ -845,6 +875,8 @@ const CourseMap = (() => {
         if (editor.down(x, y, geo(r))) { drag.edit = true; cv.style.cursor = 'grabbing'; }
       } else if (data && data.origin && !opts.editing()) {
         const r = cv.getBoundingClientRect();
+        const si = splitEditing() ? pickSplit(e.clientX - r.left, e.clientY - r.top, r.width, r.height) : -1;
+        if (si >= 0) { drag.split = { i: si, at: null }; hover = null; cv.style.cursor = 'grabbing'; return; }
         const lap = pickCar(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
         if (lap) { drag.car = { lap, i: null }; hover = null; cv.style.cursor = 'grabbing'; }
       }
@@ -853,7 +885,8 @@ const CourseMap = (() => {
       if (!drag) return;
       const was = drag; drag = null;
       if (was.edit) { editor.up(); cv.style.cursor = ''; draw(); return; }
-      if (was.car) { cv.style.cursor = ''; if (!moved) step(was.x, was.y, e.shiftKey); draw(); return; }   // 追っているなら、ここで車を真ん中へ戻す。引かずに押しただけなら少し送る
+      if (was.car) { cv.style.cursor = ''; if (!moved) step(was.x, was.y, e.shiftKey); draw(); return; }
+      if (was.split) { cv.style.cursor = ''; if (opts.onSplit) opts.onSplit(was.split.i, moved ? lineAt(was.split.at) : null, moved ? was.split.at : null); return; }   // 追っているなら、ここで車を真ん中へ戻す。引かずに押しただけなら少し送る
       if (moved || !data || !data.origin) return;
       const r = cv.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
@@ -877,6 +910,15 @@ const CourseMap = (() => {
         later();
         return;
       }
+      if (drag && drag.split) {               // 区間の線を引く：基準の周の線に沿って動かす（離したときに opts.onSplit で知らせる）
+        moved = true;
+        const r = cv.getBoundingClientRect();
+        const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        const b = valueNear(refLap(), x, y, drag.split.i0);
+        const ln = b && lineAt(b.v);
+        if (ln && opts.onSplitMove) { drag.split.i0 = b.i; drag.split.at = b.v; opts.onSplitMove(drag.split.i, ln); }
+        return;
+      }
       if (drag && drag.car) {                 // 車を引く：周の線に沿って、カーソル（グラフ・動画も）を動かす
         moved = true;
         const r = cv.getBoundingClientRect();
@@ -895,7 +937,8 @@ const CourseMap = (() => {
       if (!drag) {
         if (!data || !data.origin) return;
         const r = cv.getBoundingClientRect(), was = hover;
-        const onCar = !opts.editing() && pickCar(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        const onCar = !opts.editing() && (pickCar(e.clientX - r.left, e.clientY - r.top, r.width, r.height) ||
+                                          splitEditing() && pickSplit(e.clientX - r.left, e.clientY - r.top, r.width, r.height) >= 0);
         cv.style.cursor = onCar ? 'grab' : '';
         hover = pickHover(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
         const same = (a, b) => (a && b ? a.lap === b.lap && a.i === b.i && a.mark === b.mark : a === b);
@@ -922,7 +965,8 @@ const CourseMap = (() => {
   }
 
   return {
-    // o：{x() 'dist'|'time', color(key), lines() {line, sectors, splits, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか,
+    // o：{x() 'dist'|'time', color(key), lines() {line, sectors, splits, splitLabels, splitSel, splitEdit, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか,
+    //     splitEditing() 区間の線を直しているか, onSplitMove(i, {lat,lon,bearing}) 引いている途中, onSplit(i, 線か null, 横軸の値) 離した（null は押しただけ）,
     //     paint() {mode 'lap'|'value'|'rate'|'delta', ch, chLabel, unit, lo, hi 段の範囲を手で（null は自動）, dotted, acc, marks, markLabel, markUnit}}
     init(canvas, o) { cv = canvas; opts = o; bind(); },
     show(d, keepView) { const same = data && d && data.origin && d.origin && data.origin[0] === d.origin[0] && data.origin[1] === d.origin[1]; data = d; hover = null; if (!(keepView && same && view)) { fit(); followZoom = follow; } draw(); },
@@ -938,6 +982,15 @@ const CourseMap = (() => {
     setEditor(ed) { editor = ed || null; if (cv) cv.style.cursor = ''; draw(); },
     toXY: (lat, lon) => toXY(lat, lon),
     toLatLon: (x, y) => toLatLon(x, y),
+    // 基準の周の、横軸の値 v の所に置く線（区間の線を足す・動かすため）
+    lineAt: (v) => (data && data.origin ? lineAt(v) : null),
+    // (lat, lon) を基準の周の線へ下ろした所の横軸の値 {s, t}（グラフに区間の線を描くため）。測位が無ければ null
+    refAt(lat, lon) {
+      const lap = data && data.origin && refLap();
+      if (!lap) return null;
+      const [x, y] = toXY(lat, lon), a = valueNear(lap, x, y, null, 's'), b = valueNear(lap, x, y, null, 't');
+      return a && b ? { s: a.v, t: b.v, d: a.d } : null;
+    },
     alongBy: (track, key, v, d) => alongBy(track, key, v, d),   // 試験から呼ぶため
     ready: () => !!(data && data.origin),
     // 画面の上の位置（clientX, clientY）。試しに押す所を決めるため

@@ -150,6 +150,25 @@ class StoreSectionsTest(unittest.TestCase):
         again.open(self.sample)
         self.assertEqual(len(again.list()[0]['splits']), 1)
 
+    def test_names_follow_splits(self):
+        # 区間の名前（SP-10-37）：線の数＋1。版を残すと持っていき、置き直す（自動）と消える
+        name = self.course['name']
+        self.store.sections_auto(self.sid, 2)
+        sp = self.store.lines.splits(name)
+        self.assertEqual(self.store.list()[0]['split_names'], ['', ''])
+        self.store.set_splits(name, sp, [' 直線 ', '1コーナー'])
+        s = self.store.list()[0]
+        self.assertEqual(s['split_names'], ['直線', '1コーナー'])
+        self.store.set_lines('save', name, '版B', self.course['line'], self.course['sectors'])
+        self.assertEqual(self.store.lines.split_names(name), ['直線', '1コーナー'])
+        self.store.sections_auto(self.sid, 3)
+        self.assertEqual(self.store.list()[0]['split_names'], ['', ''])
+        for bad in (['a'], ['a', 'b', 'c'], ['a', 1], ['a', 'x' * 31], 'ab'):
+            with self.assertRaises(lines.LineError, msg=bad):
+                self.store.set_splits(name, sp, bad)
+        self.store.set_splits(name, [], [])
+        self.assertEqual(self.store.list()[0]['split_names'], [])
+
     def test_errors(self):
         with self.assertRaises(ValueError):
             self.store.sections_auto(self.sid, 99)

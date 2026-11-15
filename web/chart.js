@@ -6,6 +6,7 @@
 const Chart = (() => {
   const PAD_L = 52, PAD_R = 10, PAD_T = 22, PAD_B = 4, AXIS_H = 22;
   let root = null, data = null, opts = null, view = null, viewX = null, cursorX = null, pinned = null, panels = [], drag = null;
+  let marks = [];             // 区間の線の位置 [{x, label, sel}]（SP-10-37）
 
   window.addEventListener('mouseup', () => { drag = null; });
 
@@ -157,6 +158,15 @@ const Chart = (() => {
       }
       g.stroke();
     }
+    // 区間の線（縦の破線。札はいちばん上の段だけ）
+    g.font = '10px "Yu Gothic UI", "Segoe UI", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'top';
+    for (const m of marks) {
+      if (m.x === null || m.x === undefined || m.x < view[0] || m.x > view[1]) continue;
+      const x = Math.round(px(m.x, w)) + 0.5, c = m.sel ? css('--accent') : css('--sbest');
+      g.strokeStyle = c; g.lineWidth = m.sel ? 2 : 1; g.setLineDash([4, 3]);
+      g.beginPath(); g.moveTo(x, PAD_T); g.lineTo(x, h - PAD_B); g.stroke(); g.setLineDash([]);
+      if (p === panels[0] && m.label) { g.fillStyle = c; g.fillText(m.label, x + 3, PAD_T + 1); }
+    }
     g.restore();
     // カーソル
     if (cursorX !== null && cursorX >= view[0] && cursorX <= view[1]) {
@@ -260,6 +270,8 @@ const Chart = (() => {
       if (x < view[0] || x > view[1]) { const span = view[1] - view[0]; setView(x - span / 2, x + span / 2); } else draw();
     },
     cursor() { return cursorX; },
+    // 区間の線の位置（横軸の値）を描く
+    setMarks(list) { marks = list || []; if (data && root) draw(); },
     clear() { data = null; panels = []; if (root) root.textContent = ''; },
   };
 })();

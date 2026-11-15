@@ -200,6 +200,7 @@ function sectionLaps() {
 function renderSections() {
   const box = $('secbox');
   box.textContent = '';
+  if (state.secdraft) { box.hidden = false; renderSecEdit(box); return; }
   const { ref, laps } = sectionLaps();
   const s = ref && ref.s;
   box.hidden = !s || state.mode !== 'app' || !s.laps.app;
@@ -209,7 +210,10 @@ function renderSections() {
     '前後Gもブレーキも無い記録では、直線の最高速の所に置きます。線はコースごとに、使っている線の版（版を使っていなければ、その場で置いた分）に残ります' },
   splits.length ? '区間を置き直す' : '区間を自動で置く');
   auto.onclick = () => sectionRequest('auto', { id: ref.id, lap: ref.lap }, auto);
-  const head = el('div', { class: 'sechead' }, el('h3', {}, '区間'), auto);
+  const edit = el('button', { type: 'button', title: '区間の線を手で足す・消す・動かし、区間に名前を付けます（地図の線はつかんで動かせます）' }, '区間を直す');
+  edit.onclick = startSecEdit;
+  edit.disabled = !s.course || !state.refSession;
+  const head = el('div', { class: 'sechead' }, el('h3', {}, '区間'), auto, edit);
   if (splits.length) {
     const clear = el('button', { type: 'button', title: 'このコースの区間の線を消します' }, '区間を消す');
     clear.onclick = () => { if (confirm('このコースの区間の線を消しますか？')) sectionRequest('set', { course: s.course, splits: [] }, clear); };
@@ -242,7 +246,7 @@ function renderSections() {
       if (has(t) && has(best) && Math.abs(t - best) < 0.0005) cls += ' sbest';
       else if (k > 0 && has(t) && has(rt)) cls += t < rt - 0.0005 ? ' faster' : t > rt + 0.0005 ? ' slower' : '';
       body.append(el('tr', { class: k === 0 ? 'secfirst' : '' },
-        el('td', { class: 'sec' }, k === 0 ? String(i + 1) : ''),
+        el('td', { class: 'sec' }, k === 0 ? String(i + 1) + ((s.split_names || [])[i] ? ' ' + s.split_names[i] : '') : ''),
         el('td', { class: 'num', title: `${r.s.title} ${r.lap}周${k === 0 ? '（基準）' : ''}` },
            el('span', { class: 'lapdot', style: `background:${colorFor(r.key)}` }), String(r.lap)),
         el('td', { class: cls }, has(t) ? t.toFixed(3) : '—'),
@@ -275,6 +279,170 @@ async function sectionRequest(action, body, btn) {
       : '区間の線を消しました', 'ok');
     render();
   } catch (e) { status('裏の処理とつながっていません', 'ng'); } finally { btn.disabled = false; }
+}
+
+// ---------------------------------------------------------------- 区間の線を手で直す（SP-10-37・仕様 3-2）
+// 直している中身：state.secdraft = {course, head（区間1の名前）, items: [{line, name（その線から始まる区間の名前）}], sel（選んだ線の番号か -1）, dirty}
+// 線は基準の周の線に沿った順に並べる。足す＝カーソルの所で切る（区間を2つに分ける）、消す＝前の区間とつなぐ、
+// 動かす＝地図で線をつかんで引くか、選んだ線をカーソルの所へ。保存すると同じコースの全部の周を切り直す
+const SPLIT_WIDTH_M = 30;      // 区間の線の幅（裏の sections.SPLIT_WIDTH_M と同じ）
+const SPLIT_NEAR_M = 10;       // ほかの線・コントロールラインとこれより近い所には足さない
+
+function splitLabel(i, name) { return `区${i + 2}${name ? ' ' + name : ''}`; }
+function refPos(line) { const r = CourseMap.refAt(line.lat, line.lon); return r ? r.s : null; }
+
+function sortDraft() {
+  const d = state.secdraft, selLine = d.sel >= 0 ? d.items[d.sel] : null;
+  d.items.sort((a, b) => (refPos(a.line) ?? 0) - (refPos(b.line) ?? 0));
+  d.sel = selLine ? d.items.indexOf(selLine) : -1;
+}
+
+function startSecEdit() {
+  const s = state.refSession;
+  if (!s || !s.course) return;
+  if (state.draft || state.outedit) { status('線を直している・コース図を直している間は、区間を直せません', 'ng'); return; }
+  const names = s.split_names || [];
+  state.secdraft = { course: s.course, head: names[0] || '', sel: -1, dirty: false,
+                     items: (s.splits || []).map((line, i) => ({ line: { ...line }, name: names[i + 1] || '' })) };
+  sortDraft();
+  secChanged(false);
+}
+
+function secChanged(dirty) {
+  if (dirty) state.secdraft.dirty = true;
+  CourseMap.redraw();
+  updateMarks();
+  renderSections();
+}
+
+// カーソルの所に区間の線を足す（その区間を2つに分ける）
+function secCut() {
+  const d = state.secdraft, v = Chart.cursor();
+  const ln = v === null ? null : CourseMap.lineAt(v);
+  if (!ln) { status('グラフ・地図・動画でカーソルを動かしてから押してください（基準の周の上の所に足します）', 'ng'); return; }
+  const line = { lat: +ln.lat.toFixed(8), lon: +ln.lon.toFixed(8), bearing: +ln.bearing.toFixed(1), width_m: SPLIT_WIDTH_M };
+  const at = refPos(line), len = state.overlay && state.overlay.ref_length_m;
+  if (at === null || at < SPLIT_NEAR_M || (len && len - at < SPLIT_NEAR_M) ||
+      d.items.some((x) => Math.abs((refPos(x.line) ?? -1e9) - at) < SPLIT_NEAR_M)) {
+    status(`ほかの区間の線・コントロールラインから${SPLIT_NEAR_M} m の内には足せません`, 'ng'); return;
+  }
+  const item = { line, name: '' };
+  d.items.push(item);
+  sortDraft();
+  d.sel = d.items.indexOf(item);
+  secChanged(true);
+}
+
+// 選んだ線をカーソルの所へ動かす
+function secMoveToCursor() {
+  const d = state.secdraft, v = Chart.cursor();
+  if (d.sel < 0) return;
+  const ln = v === null ? null : CourseMap.lineAt(v);
+  if (!ln) { status('グラフ・地図・動画でカーソルを動かしてから押してください', 'ng'); return; }
+  d.items[d.sel].line = { lat: +ln.lat.toFixed(8), lon: +ln.lon.toFixed(8), bearing: +ln.bearing.toFixed(1), width_m: SPLIT_WIDTH_M };
+  sortDraft();
+  secChanged(true);
+}
+
+// 区間 k（0 始まり）の頭の線を消して、前の区間とつなぐ（名前は前の区間のものが残る）
+function secJoin(k) {
+  const d = state.secdraft;
+  if (k < 1 || k > d.items.length) return;
+  d.items.splice(k - 1, 1);
+  d.sel = -1;
+  secChanged(true);
+}
+
+async function secSave(btn) {
+  const d = state.secdraft;
+  btn.disabled = true;
+  try {
+    const names = [d.head, ...d.items.map((x) => x.name)].map((x) => x.trim());
+    const j = await api('sections/set', { course: d.course, splits: d.items.map((x) => x.line), names: d.items.length && names.some((x) => x) ? names : [] });
+    if (j.rev !== undefined) state.rev = j.rev;
+    if (!j.ok) { status(j.error, 'ng'); return; }
+    state.sessions = j.sessions;
+    state.secdraft = null;
+    status(`区間の線を${d.items.length}本で保存し、周を切り直しました`, 'ok');
+    render();
+    CourseMap.redraw();
+  } catch (e) { status('裏の処理とつながっていません', 'ng'); } finally { btn.disabled = false; }
+}
+
+function secCancel() {
+  if (state.secdraft && state.secdraft.dirty && !confirm('直した区間の線を保存せずにやめますか？')) return;
+  state.secdraft = null;
+  CourseMap.redraw();
+  updateMarks();
+  renderSections();
+}
+
+// 地図で区間の線を引いている途中・離したとき
+function onSplitMove(i, ln) {
+  const d = state.secdraft;
+  if (!d || !d.items[i]) return;
+  d.items[i].line = { lat: +ln.lat.toFixed(8), lon: +ln.lon.toFixed(8), bearing: +ln.bearing.toFixed(1), width_m: SPLIT_WIDTH_M };
+  d.sel = i;
+  CourseMap.redraw();
+  updateMarks();
+}
+function onSplit(i, ln) {
+  const d = state.secdraft;
+  if (!d || !d.items[i]) return;
+  if (ln) { onSplitMove(i, ln); sortDraft(); secChanged(true); return; }
+  d.sel = d.sel === i ? -1 : i;              // 押しただけ：選ぶ（もう一度押すと外す）
+  secChanged(false);
+}
+
+// グラフに区間の線を縦に描く（基準の周の上の位置）
+function updateMarks() {
+  if (!state.overlay) { Chart.setMarks([]); return; }
+  const key = state.x === 'dist' ? 's' : 't';
+  const L = mapLines();
+  const out = (L && L.splits || []).map((line, i) => {
+    const r = CourseMap.refAt(line.lat, line.lon);
+    return { x: r ? r[key] : null, label: (L.splitLabels && L.splitLabels[i]) || splitLabel(i, ''), sel: L.splitSel === i };
+  });
+  Chart.setMarks(out);
+}
+
+// 直している間の区間の枠
+function renderSecEdit(box) {
+  const d = state.secdraft;
+  const btn = (text, title, fn, dis) => { const b = el('button', { type: 'button', title }, text); b.onclick = () => fn(b); b.disabled = !!dis; return b; };
+  const saveB = btn('保存', '区間の線と名前を、使っている線の版（版を使っていなければその場で置いた分）に残し、同じコースの全部の周を切り直します（Ctrl+S でも）', secSave, !d.dirty);
+  saveB.id = 'secsave';
+  box.append(el('div', { class: 'sechead' }, el('h3', {}, '区間を直す'),
+    btn('カーソルの所で切る', 'グラフ・地図・動画で動かしたカーソルの所（基準の周の上）に区間の線を足し、その区間を2つに分けます', secCut),
+    btn('選んだ線をカーソルの所へ', '選んだ区間の線を、カーソルの所へ動かします', secMoveToCursor, d.sel < 0),
+    btn('選んだ線を消す', '選んだ区間の線を消して、その前後の区間を1つにつなぎます（Delete キーでも）', () => secJoin(d.sel + 1), d.sel < 0),
+    el('span', { class: 'grow' }),
+    saveB,
+    btn('やめる', '直した分を捨てて、元の区間の線に戻します', secCancel)));
+  box.append(el('p', { class: 'note' }, '地図の区間の線はつかんで基準の周の線に沿って動かせます。押すと選びます。グラフには縦の破線で出ます。' +
+    '名前（「1コーナー」「ハイポイント」など）は区間の表と地図の札に出ます'));
+  const len = state.overlay && state.overlay.ref_length_m;
+  const bounds = [0, ...d.items.map((x) => refPos(x.line)), len ?? null];
+  const body = el('tbody');
+  for (let k = 0; k <= d.items.length; k++) {
+    const sel = k > 0 && d.sel === k - 1;
+    const input = el('input', { type: 'text', maxlength: '30', placeholder: '名前（なくてもよい）', 'aria-label': `区間${k + 1}の名前`, class: 'secname' });
+    input.value = k === 0 ? d.head : d.items[k - 1].name;
+    input.oninput = () => { if (k === 0) d.head = input.value; else d.items[k - 1].name = input.value; d.dirty = true;
+                            saveB.disabled = false; CourseMap.redraw(); updateMarks(); };
+    const a = bounds[k], b = bounds[k + 1];
+    const row = el('tr', { class: sel ? 'secsel' : '' },
+      el('td', { class: 'sec' }, String(k + 1)),
+      el('td', {}, input),
+      el('td', { class: 'num', title: '基準の周の上での長さ' }, a !== null && b !== null ? `${Math.round(b - a)} m` : ''),
+      el('td', { class: 'num diff', title: '区間の頭の線の、基準の周の頭からの距離' }, k === 0 ? 'コントロールライン' : a !== null ? `${Math.round(a)} m から` : ''),
+      el('td', {}, k === 0 ? '' : btn(sel ? '選んでいる' : '頭の線を選ぶ', 'この区間の頭の線を選びます（地図とグラフで太く出ます）',
+                                      () => { d.sel = sel ? -1 : k - 1; secChanged(false); })),
+      el('td', {}, k === 0 ? '' : btn('前とつなぐ', 'この区間の頭の線を消して、前の区間とつなぎます', () => secJoin(k))));
+    body.append(row);
+  }
+  box.append(el('div', { class: 'tablewrap' }, el('table', { class: 'laptable sectable secedit' },
+    el('thead', {}, el('tr', {}, el('th', {}, '区間'), el('th', {}, '名前'), el('th', {}, '長さ'), el('th', {}, '頭'), el('th', {}, ''), el('th', {}, ''))), body)));
 }
 
 // ---------------------------------------------------------------- 重ね合わせ
@@ -446,6 +614,7 @@ async function renderPicked() {
   VideoPane.cursor(Chart.cursor(), 'pin');
   renderLineControls();
   renderSections();
+  updateMarks();
 }
 
 // コース図（道路の縁）：基準の周の走行のコースで頼む。コースごとに裏が残すので、2回目からはすぐ出る
@@ -620,8 +789,14 @@ function renderLineControls() {
 
 function mapLines() {
   if (state.draft) return { line: state.draft.line, sectors: state.draft.sectors, splits: [], selected: state.draft.selected, draft: true };
+  const d = state.secdraft;
+  if (d && state.refSession) {
+    return { line: state.refSession.line, sectors: state.refSession.sectors, selected: null, draft: false, splitEdit: true, splitSel: d.sel,
+             splits: d.items.map((x) => x.line), splitLabels: d.items.map((x, i) => splitLabel(i, x.name)) };
+  }
   const s = state.refSession;
-  return s ? { line: s.line, sectors: s.sectors, splits: state.mode === 'app' ? s.splits || [] : [], selected: null, draft: false } : null;
+  return s ? { line: s.line, sectors: s.sectors, splits: state.mode === 'app' ? s.splits || [] : [], selected: null, draft: false,
+               splitLabels: (s.splits || []).map((_, i) => splitLabel(i, (s.split_names || [])[i + 1])) } : null;
 }
 
 function renderDraft() {
@@ -646,6 +821,7 @@ function renderDraft() {
 function startEdit() {
   const s = state.refSession;
   if (!s) return;
+  if (state.secdraft) { status('区間を直している間は、線を直せません（区間の「保存」か「やめる」を先に）', 'ng'); return; }
   const copy = (x) => (x ? { ...x } : null);
   state.draft = { course: s.course, line: copy(s.line) || { lat: 0, lon: 0, bearing: 0, width_m: 30 },
                   sectors: (s.sectors || []).map(copy), selected: 0 };
@@ -838,6 +1014,7 @@ function renderOutlineControls() {
 function startOutlineEdit() {
   const s = state.refSession, o = state.outlineData;
   if (!s || !o || state.draft) return;
+  if (state.secdraft) { status('区間を直している間は、コース図を直せません（区間の「保存」か「やめる」を先に）', 'ng'); return; }
   OutlineEditor.load(o, CourseMap.toXY, {
     radius: () => { const v = +$('oeradius').value; return isFinite(v) ? Math.min(60, Math.max(0, v)) : 10; },
     zebraW: () => { const v = +$('oezebraw').value; return isFinite(v) && v >= 0.2 && v <= 5 ? v : 1; },
@@ -932,6 +1109,12 @@ document.addEventListener('keydown', (e) => {
     if ($('calcdlg').open) saveCalc();
     else if (state.outedit) { if (!$('oesave').disabled) $('oesave').click(); }
     else if (state.draft) $('saveline').click();
+    else if (state.secdraft && $('secsave') && !$('secsave').disabled) $('secsave').click();
+    return;
+  }
+  if (state.secdraft && !typing) {           // 区間を直しているとき：Delete で選んだ線を消す、Esc で選ぶのをやめる
+    if ((e.key === 'Delete' || e.key === 'Backspace') && state.secdraft.sel >= 0) { e.preventDefault(); secJoin(state.secdraft.sel + 1); }
+    else if (e.key === 'Escape' && state.secdraft.sel >= 0) { state.secdraft.sel = -1; secChanged(false); }
     return;
   }
   if (!state.outedit || typing) return;
@@ -943,7 +1126,9 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape' && OutlineEditor.cancelPending()) CourseMap.redraw();
 });
 // 保存していない直しがあるまま閉じようとしたら聞く
-window.addEventListener('beforeunload', (e) => { if (state.outedit && OutlineEditor.dirty()) { e.preventDefault(); e.returnValue = ''; } });
+window.addEventListener('beforeunload', (e) => {
+  if ((state.outedit && OutlineEditor.dirty()) || (state.secdraft && state.secdraft.dirty)) { e.preventDefault(); e.returnValue = ''; }
+});
 
 $('open').onclick = pickAndOpen;
 $('resume').onclick = resume;
@@ -958,6 +1143,7 @@ CourseMap.init($('mapcv'), {
   onPlace: placeLine, photo: () => $('photo').checked, paint: paintForMap,
   onFollow: (on) => { $('follow').checked = on; saveFollow(); },
   onTool: (t) => setOutlineTool(t),
+  splitEditing: () => !!state.secdraft, onSplitMove, onSplit,
 });
 // 車を追うか（ふだんは追わない。図を手で引くと外れる。選び直しは覚える）
 function saveFollow() { try { localStorage.setItem('follow', $('follow').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } }
