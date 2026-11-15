@@ -6,7 +6,10 @@
 
 置き場：~/.ecologger-analysis/lines.json
   {"<コースの名前>": {"active": "<版の名前>" | null,
-                      "variants": {"<版の名前>": {"line": {...}, "sectors": [{...}], "saved_utc": "..."}}}}
+                      "variants": {"<版の名前>": {"line": {...}, "sectors": [{...}], "splits": [{...}], "saved_utc": "..."}},
+                      "splits": [{...}]}}
+splits は区間（コーナー）の線（SP-10-13）。版を使っているときはその版の splits、使っていなければコースの splits
+（その場で置いた分）を使う。前のファイル（splits が無い）は区間の線が無いものとして読む。
 """
 import json
 import threading
@@ -16,6 +19,7 @@ from pathlib import Path
 from .laps import valid_line
 
 MAX_NAME = 40
+MAX_SPLITS = 60
 
 
 class LineError(ValueError):
@@ -63,13 +67,40 @@ class Lines:
         except LineError:
             return None
 
-    def save(self, course, name, line, sectors):
+    def splits(self, course):
+        """区間の線。版を使っていればその版の、使っていなければその場で置いた分"""
+        c = self._read().get(course) or {}
+        name = c.get('active')
+        v = (c.get('variants') or {}).get(name) if name else None
+        raw = (v or {}).get('splits') if v else c.get('splits')
+        try:
+            return [clean_line(x) for x in raw or []]
+        except LineError:
+            return []
+
+    def set_splits(self, course, splits):
+        """区間の線を入れ替える（使っている版か、その場で置いた分）"""
+        if not isinstance(course, str) or not course:
+            raise LineError('コースの名前が分からない走行では、区間の線を残せない')
+        if not isinstance(splits, list) or len(splits) > MAX_SPLITS:
+            raise LineError(f'区間の線は{MAX_SPLITS}本までの並び')
+        clean = [clean_line(x) for x in splits]
+        with self.lock:
+            d = self._read()
+            c = d.setdefault(course, {'active': None, 'variants': {}})
+            v = (c.get('variants') or {}).get(c.get('active')) if c.get('active') else None
+            (v if v is not None else c)['splits'] = clean
+            self._write(d)
+
+    def save(self, course, name, line, sectors, splits=None):
+        """版を残して使う。splits を渡さなければ、いま使っている区間の線をそのまま持っていく"""
         if not isinstance(course, str) or not course:
             raise LineError('コースの名前が分からない走行では、線の版を残せない')
         name = name.strip() if isinstance(name, str) else ''
         if not name or len(name) > MAX_NAME:
             raise LineError(f'版の名前は1〜{MAX_NAME}文字')
-        entry = {'line': clean_line(line), 'sectors': [clean_line(s) for s in (sectors or [])],
+        keep = self.splits(course) if splits is None else [clean_line(x) for x in splits]
+        entry = {'line': clean_line(line), 'sectors': [clean_line(s) for s in (sectors or [])], 'splits': keep,
                  'saved_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
         with self.lock:
             d = self._read()

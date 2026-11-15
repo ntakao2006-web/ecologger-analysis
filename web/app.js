@@ -4,6 +4,8 @@
 const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 'dist', channels: null, ref: '', colors: new Map(), req: 0,
                 overlay: null, refSession: null, draft: null, outedit: null, formulas: [], help: null, editing: null, rev: null, notice: 0 };
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
+const SEC_LAPS = 4;            // 区間の表に並べる周の数
+const SLOW_PCT = 5;            // 平均の周で外す遅さ（裏の sections.SLOW_RATIO と同じ）
 const DEFAULT_CHANNELS = ['Speed', 'Throttle', 'RPM', 'LongAccel', 'LatAccel'];
 try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
 // コース図の塗り（SP-10-12）。ranges は塗り方・チャンネルごとに手で決めた段の範囲 [低, 高]（null は自動）
@@ -150,6 +152,7 @@ function sessionBlock(s, best) {
     body.append(row);
   }
   block.append(el('div', { class: 'tablewrap' }, el('table', { class: 'laptable' }, el('thead', {}, head), body)));
+  if (usingApp || nsec) { const t = theoryLine(s, usingApp); if (t) block.append(t); }
   if (usingApp && s.line_name) block.append(el('p', { class: 'note' }, `線の版「${s.line_name}」で切っています（ロガーとは線が違うので、ロガーのタイムとは比べません）`));
   if (compareLogger) {
     const matched = new Set(laps.filter((x) => x.logger).map((x) => x.logger.lap));
@@ -158,6 +161,120 @@ function sessionBlock(s, best) {
   }
   if (s.notes.length) block.append(el('details', { class: 'notes' }, el('summary', {}, '覚え書き'), ...s.notes.map((n) => el('p', {}, n))));
   return block;
+}
+
+// ---------------------------------------------------------------- 区間（コーナー）の表と理論ベスト（SP-10-13・仕様 3-2）
+// 理論ベスト・連続ベスト・平均の周は、裏が同じコースの開いている走行どうしで出したもの（stats）
+function theoryLine(s, usingApp) {
+  const st = s.stats;
+  if (!st) return null;
+  const parts = [];
+  const sp = usingApp && st.splits && st.splits.best.length ? st.splits : null;
+  if (sp && sp.theory !== null) parts.push(['理論ベスト（区間）', sp.theory, '区間ごとのベストを足したもの']);
+  if (st.sectors && st.sectors.theory !== null) parts.push(['理論ベスト（セクター）', st.sectors.theory, 'セクターごとのベストを足したもの']);
+  if (sp && sp.rolling !== null) parts.push(['連続ベスト', sp.rolling, '周の境目をまたいで、続けて走った区間を1周ぶんつないだときの最速']);
+  if (sp && sp.average !== null) parts.push(['平均の周', sp.average, `区間ごとの平均を足したもの。区間タイムがその区間の中央値より${SLOW_PCT}%以上遅い周（詰まった・ピット）は、その区間だけ外す`]);
+  if (!parts.length) return null;
+  const p = el('p', { class: 'theory', title: '同じコースの開いている走行の周から（測位の抜けた周を除く）。括弧はベストの周との差' });
+  parts.forEach(([name, v, why], i) => {
+    if (i) p.append('　');
+    p.append(el('span', { title: why }, name + ' ', el('b', {}, lapTime(v)),
+                st.best_lap !== null ? el('span', { class: 'diff' }, ` (${gap(v - st.best_lap)})`) : ''));
+  });
+  return p;
+}
+
+// 区間の表に出す周：選んだ周のうち、基準の周と同じコースで区間の数が出ている周（基準の周を先に、SEC_LAPS 周まで）
+function sectionLaps() {
+  const picks = pickedLaps();
+  const o = state.overlay;
+  const refKey = o && o.laps[o.ref] ? o.laps[o.ref].key : null;
+  const ref = picks.find((p) => p.key === refKey) || picks.slice().sort((a, b) => a.time_s - b.time_s)[0];
+  if (!ref) return { ref: null, laps: [] };
+  const course = ref.s.course || ref.s.id;
+  const rows = picks.filter((p) => (p.s.course || p.s.id) === course).map((p) => ({ ...p, x: lapsOf(p.s).find((x) => x.lap === p.lap) }));
+  rows.sort((a, b) => (a.key === ref.key ? -1 : b.key === ref.key ? 1 : 0));
+  return { ref, laps: rows.filter((r) => r.x && r.x.sec && r.x.sec.length).slice(0, SEC_LAPS) };
+}
+
+function renderSections() {
+  const box = $('secbox');
+  box.textContent = '';
+  const { ref, laps } = sectionLaps();
+  const s = ref && ref.s;
+  box.hidden = !s || state.mode !== 'app' || !s.laps.app;
+  if (box.hidden) return;
+  const splits = s.splits || [];
+  const auto = el('button', { type: 'button', title: `基準の周（${ref.lap}周）のブレーキの踏み始めに区間の線を置き、同じコースの全部の周をその線で切ります。` +
+    '前後Gもブレーキも無い記録では、直線の最高速の所に置きます。線はコースごとに、使っている線の版（版を使っていなければ、その場で置いた分）に残ります' },
+  splits.length ? '区間を置き直す' : '区間を自動で置く');
+  auto.onclick = () => sectionRequest('auto', { id: ref.id, lap: ref.lap }, auto);
+  const head = el('div', { class: 'sechead' }, el('h3', {}, '区間'), auto);
+  if (splits.length) {
+    const clear = el('button', { type: 'button', title: 'このコースの区間の線を消します' }, '区間を消す');
+    clear.onclick = () => { if (confirm('このコースの区間の線を消しますか？')) sectionRequest('set', { course: s.course, splits: [] }, clear); };
+    head.append(clear);
+  }
+  box.append(head);
+  if (!s.course) { auto.disabled = true; box.append(el('p', { class: 'note' }, 'コースの名前が分からない走行なので、区間の線を残せません')); return; }
+  if (!splits.length) { box.append(el('p', { class: 'note' }, `区間の線がまだありません。「区間を自動で置く」で、基準の周（${ref.lap}周）のブレーキの踏み始めに置きます`)); return; }
+  if (!laps.length) { box.append(el('p', { class: 'note' }, '選んだ周に区間の数がありません（測位が足りない周）')); return; }
+  const st = s.stats && s.stats.splits;
+  const n = laps[0].x.sec.length;
+  const th = (text, title) => el('th', title ? { title } : {}, text);
+  const thead = el('tr', {}, th('区間'), th('周'), th('タイム', '区間の線から次の区間の線まで（秒）'),
+    th('差', 'その区間のベスト（同じコースの開いている走行の中で）との差'),
+    th('入口', '区間の頭の線を越えたときの速さ（km/h）'),
+    th('ブレーキ', '区間の頭の線からブレーキの踏み始めまで（m、＋は奥で踏んだ）。区間の線は、置いたときの基準の周の踏み始めにある'),
+    th('ボトム', '区間の中の最小の速さ（km/h）'), th('位置', 'ボトムの所が区間の頭から何 m か（手前なら脱出重視、奥なら進入重視）'),
+    th('半径', 'ボトムの前後2秒の最小の旋回半径（m、測位から計算）'), th('出口', '次の区間の線を越えたときの速さ（km/h）'));
+  const body = el('tbody');
+  const refRow = laps[0];
+  const has = (v) => v !== null && v !== undefined;
+  const num = (v, d = 1) => (has(v) ? v.toFixed(d) : '—');
+  const signed = (v) => (has(v) ? (v > 0.05 ? '+' : v < -0.05 ? '−' : '') + Math.abs(v).toFixed(1) : '—');
+  for (let i = 0; i < n; i++) {
+    const best = st ? st.best[i] : null;
+    laps.forEach((r, k) => {
+      const t = (r.x.splits || [])[i], m = r.x.sec[i] || {};
+      const rt = (refRow.x.splits || [])[i];
+      let cls = 'num time';
+      if (has(t) && has(best) && Math.abs(t - best) < 0.0005) cls += ' sbest';
+      else if (k > 0 && has(t) && has(rt)) cls += t < rt - 0.0005 ? ' faster' : t > rt + 0.0005 ? ' slower' : '';
+      body.append(el('tr', { class: k === 0 ? 'secfirst' : '' },
+        el('td', { class: 'sec' }, k === 0 ? String(i + 1) : ''),
+        el('td', { class: 'num', title: `${r.s.title} ${r.lap}周${k === 0 ? '（基準）' : ''}` },
+           el('span', { class: 'lapdot', style: `background:${colorFor(r.key)}` }), String(r.lap)),
+        el('td', { class: cls }, has(t) ? t.toFixed(3) : '—'),
+        el('td', { class: 'num diff' }, has(best) && has(t) ? gap(t - best) : ''),
+        el('td', { class: 'num' }, num(m.entry)), el('td', { class: 'num' }, i === 0 ? '' : signed(m.brake_m)),
+        el('td', { class: 'num' }, num(m.min_kmh)), el('td', { class: 'num' }, num(m.min_at_m, 0)),
+        el('td', { class: 'num' }, num(m.min_radius_m, 0)), el('td', { class: 'num' }, num(m.exit))));
+    });
+    if (st && has(st.mean[i])) {
+      body.append(el('tr', { class: 'secstat' }, el('td', {}, ''), el('td', { colspan: '9' },
+        `ベスト ${num(best, 3)}　平均 ${num(st.mean[i], 3)}${has(st.sd[i]) ? `　ばらつき ±${num(st.sd[i], 3)}` : ''}` +
+        `（${st.used[i]}周。中央値より${SLOW_PCT}%以上遅い周は外す）`)));
+    }
+  }
+  box.append(el('div', { class: 'tablewrap' }, el('table', { class: 'laptable sectable' }, el('thead', {}, thead), body)));
+  box.append(el('p', { class: 'note' }, `区間1はコントロールラインから最初の区間の線まで。区間の線は地図に「区2」などの札で出ます。` +
+    `色：紫＝その区間のベスト、緑・赤＝基準の周（${refRow.lap}周）より速い・遅い。選んだ周のうち${SEC_LAPS}周まで`));
+}
+
+async function sectionRequest(action, body, btn) {
+  btn.disabled = true;
+  status(action === 'auto' ? '区間の線を置いています…' : '区間の線を消しています…');
+  try {
+    const j = await api('sections/' + action, body);
+    if (j.rev !== undefined) state.rev = j.rev;
+    if (!j.ok) { status(j.error, 'ng'); return; }
+    state.sessions = j.sessions;
+    status(action === 'auto'
+      ? `区間の線を${j.auto.count}本置き、周を切り直しました（${j.auto.how === 'brake' ? 'ブレーキの踏み始め' : '直線の最高速の所'}。周の頭から ${j.auto.at_m.map((v) => Math.round(v)).join('・')} m）`
+      : '区間の線を消しました', 'ok');
+    render();
+  } catch (e) { status('裏の処理とつながっていません', 'ng'); } finally { btn.disabled = false; }
 }
 
 // ---------------------------------------------------------------- 重ね合わせ
@@ -297,7 +414,7 @@ async function renderPicked() {
   $('mapEmpty').hidden = !empty;
   if (empty) {
     Chart.clear(); CourseMap.clear(); VideoPane.clear(); state.overlay = null; state.refSession = null; showVideo(0);
-    $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; renderLineControls(); return;
+    $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; renderLineControls(); renderSections(); return;
   }
   const meta = channelMeta(picks);
   state.meta = meta;
@@ -328,6 +445,7 @@ async function renderPicked() {
   showVideo(VideoPane.show(j));
   VideoPane.cursor(Chart.cursor(), 'pin');
   renderLineControls();
+  renderSections();
 }
 
 // コース図（道路の縁）：基準の周の走行のコースで頼む。コースごとに裏が残すので、2回目からはすぐ出る
@@ -501,9 +619,9 @@ function renderLineControls() {
 }
 
 function mapLines() {
-  if (state.draft) return { line: state.draft.line, sectors: state.draft.sectors, selected: state.draft.selected, draft: true };
+  if (state.draft) return { line: state.draft.line, sectors: state.draft.sectors, splits: [], selected: state.draft.selected, draft: true };
   const s = state.refSession;
-  return s ? { line: s.line, sectors: s.sectors, selected: null, draft: false } : null;
+  return s ? { line: s.line, sectors: s.sectors, splits: state.mode === 'app' ? s.splits || [] : [], selected: null, draft: false } : null;
 }
 
 function renderDraft() {
@@ -566,7 +684,8 @@ async function openPath(path) {
     const j = await api('open', { path });
     if (j.rev !== undefined) state.rev = j.rev;
     if (!j.ok) { status('開けませんでした', 'ng'); message(j.error, j.problems); return; }
-    if (!state.sessions.some((s) => s.id === j.session.id)) state.sessions.push(j.session);
+    try { state.sessions = (await api('sessions')).sessions || []; }        // 同じコースの理論ベストなどを読み直す
+    catch (e) { if (!state.sessions.some((s) => s.id === j.session.id)) state.sessions.push(j.session); }
     status(`開きました：${j.session.title}`, 'ok');
     render();
     loadRecent();

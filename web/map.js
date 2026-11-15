@@ -670,6 +670,8 @@ const CourseMap = (() => {
     if (photo) { g.shadowColor = 'rgba(0, 0, 0, 0.9)'; g.shadowBlur = 3; }
     if (L && L.line) drawLine(g, L.line, w, h, ink, 2.5, 'コントロールライン', L.draft);
     (L && L.sectors || []).forEach((s, i) => drawLine(g, s, w, h, ink2, 2, `S${i + 1}｜S${i + 2}`, L.draft));
+    // 区間（コーナー）の線（SP-10-13）。細い破線で、札はその線から始まる区間の番号
+    (L && L.splits || []).forEach((s, i) => drawLine(g, s, w, h, photo ? '#fde68a' : css('--sbest'), 1.5, `区${i + 2}`, true));
     g.shadowBlur = 0; g.shadowColor = 'transparent';
     if (L && L.selected !== null && L.selected !== undefined) {
       const sel = L.selected === 0 ? L.line : L.sectors[L.selected - 1];
@@ -920,7 +922,7 @@ const CourseMap = (() => {
   }
 
   return {
-    // o：{x() 'dist'|'time', color(key), lines() {line, sectors, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか,
+    // o：{x() 'dist'|'time', color(key), lines() {line, sectors, splits, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか,
     //     paint() {mode 'lap'|'value'|'rate'|'delta', ch, chLabel, unit, lo, hi 段の範囲を手で（null は自動）, dotted, acc, marks, markLabel, markUnit}}
     init(canvas, o) { cv = canvas; opts = o; bind(); },
     show(d, keepView) { const same = data && d && data.origin && d.origin && data.origin[0] === d.origin[0] && data.origin[1] === d.origin[1]; data = d; hover = null; if (!(keepView && same && view)) { fit(); followZoom = follow; } draw(); },

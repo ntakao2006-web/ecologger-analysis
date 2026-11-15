@@ -190,6 +190,28 @@ class ServerTest(unittest.TestCase):
         finally:
             store.outlines = real
 
+    def test_sections_api(self):
+        # 区間の線（SP-10-13）：基準の周のブレーキの踏み始めに置き、一覧に区間の数・理論ベストが入る。[] で消す
+        d = write_sample(Path(self.tmp.name) / 'sections.ecorun')
+        code, j = self.api('open', {'path': str(d)})
+        sid, course = j['session']['id'], j['session']['course']
+        try:
+            code, j = self.api('sections/auto', {'id': sid, 'lap': 2})
+            self.assertEqual(code, 200, j)
+            self.assertEqual((j['auto']['how'], j['auto']['count']), ('brake', 1))
+            s = next(x for x in j['sessions'] if x['id'] == sid)
+            self.assertEqual(len(s['splits']), 1)
+            self.assertEqual(len(s['laps']['app'][0]['sec']), 2)
+            self.assertIsNotNone(s['stats']['splits']['theory'])
+            for bad in ({'id': sid, 'lap': '2'}, {'id': sid, 'lap': True}, {'id': 1, 'lap': 2}, {'id': sid, 'lap': 99}, {'id': 's999', 'lap': 1}):
+                self.assertEqual(self.api('sections/auto', bad)[0], 400, bad)
+            self.assertEqual(self.api('sections/set', {'course': course, 'splits': 'x'})[0], 400)
+            code, j = self.api('sections/set', {'course': course, 'splits': []})
+            self.assertEqual(code, 200, j)
+            self.assertEqual(next(x for x in j['sessions'] if x['id'] == sid)['splits'], [])
+        finally:
+            self.api('close', {'id': sid})
+
     def with_video(self, name):
         """作りものの走行に、作りものの動画（中身は0〜255の繰り返し）を足す。動画は1周目の途中から2周目の途中まで"""
         d = write_sample(Path(self.tmp.name) / name)

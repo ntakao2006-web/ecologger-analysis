@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from . import __version__, formula, laps, lines, outline, overlay, session, tiles
+from . import __version__, dynamics, formula, laps, lines, outline, overlay, sections, session, tiles
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 HOME = Path.home() / '.ecologger-analysis'
@@ -50,8 +50,8 @@ def _stamp(path):
 class Store:
     """開いている走行（id → 走行と、アプリで切った周）"""
 
-    def __init__(self, home=HOME):
-        self.home = Path(home)
+    def __init__(self, home=None):
+        self.home = Path(HOME if home is None else home)     # 呼ぶときに読む（試験が HOME を差し替えられるように）
         self.lock = threading.Lock()
         self.items = {}
         self.next_id = 1
@@ -100,18 +100,53 @@ class Store:
         return summary(sid, it)
 
     def _cut(self, it):
-        """そのコースで使っている線の版（無ければ書き出しの線）で周を切る"""
+        """そのコースで使っている線の版（無ければ書き出しの線）と区間の線で周を切り、区間ごとの数と連続ベストを出す"""
         s = it['session']
         course = (s.meta.get('course') or {}).get('name')
         act = self.lines.active(course) if course else None
         it['line_names'] = self.lines.names(course) if course else []
+        splits = self.lines.splits(course) if course else []
         if act:
             name, line, sectors = act
-            it['laps'], it['line'], it['why'] = laps.for_session(s, line, sectors)
+            it['laps'], it['line'], it['why'] = laps.for_session(s, line, sectors, splits)
             it['sectors'], it['line_name'] = sectors, name
         else:
-            it['laps'], it['line'], it['why'] = laps.for_session(s)
+            it['laps'], it['line'], it['why'] = laps.for_session(s, splits=splits)
             it['sectors'], it['line_name'] = (s.meta.get('course') or {}).get('sectors') or [], None
+        it['splits'], it['rolling'] = (splits if it['laps'] is not None else []), None
+        if it['laps'] and splits:
+            if 'dyn' not in it:
+                it['dyn'] = dynamics.from_gnss(s.gnss)
+            sections.metrics(s, it['laps'], it['dyn'])
+            it['rolling'] = sections.rolling(s.gnss, it['line'], splits)
+
+    def _recut_course(self, course):
+        with self.lock:
+            for it in self.items.values():
+                if (it['session'].meta.get('course') or {}).get('name') == course:
+                    self._cut(it)
+            self.rev += 1
+
+    def sections_auto(self, sid, lap_no):
+        """区間の線を、走行 sid の lap_no 周目（コースの線で切った周）のブレーキの踏み始めに置く。同じコースの走行を切り直す"""
+        with self.lock:
+            it = self.items.get(sid)
+            if it is None:
+                raise KeyError('開いていない走行')
+            course = (it['session'].meta.get('course') or {}).get('name')
+            lap = next((x for x in it['laps'] or [] if x['lap'] == lap_no), None)
+        if not course:
+            raise ValueError('コースの名前が分からない走行では、区間の線を残せません')
+        if lap is None:
+            raise ValueError(f'コースの線で切った周に {lap_no}周目がありません')
+        found = sections.auto(it['session'], lap)
+        self.lines.set_splits(course, found['splits'])
+        self._recut_course(course)
+        return {'how': found['how'], 'at_m': found['at_m'], 'count': len(found['splits'])}
+
+    def set_splits(self, course, splits):
+        self.lines.set_splits(course, splits)
+        self._recut_course(course)
 
     def set_lines(self, action, course, name=None, line=None, sectors=None):
         """線の版を残す（save）・使う（use、name=None なら書き出しの線）・消す（delete）。同じコースの走行の周を切り直す"""
@@ -123,11 +158,7 @@ class Store:
             self.lines.delete(course, name)
         else:
             raise lines.LineError('知らない頼み')
-        with self.lock:
-            for it in self.items.values():
-                if (it['session'].meta.get('course') or {}).get('name') == course:
-                    self._cut(it)
-            self.rev += 1
+        self._recut_course(course)
         return self.list()
 
     def close(self, sid):
@@ -296,8 +327,16 @@ class Store:
         return f if f and f.is_file() else None
 
     def list(self):
+        """開いている走行の一覧。stats は同じコースの開いている走行どうしの理論ベスト・連続ベスト・平均の周（SP-10-13）"""
         with self.lock:
-            return [summary(sid, it) for sid, it in self.items.items()]
+            out = [summary(sid, it) for sid, it in self.items.items()]
+            groups = {}
+            for sid, it in self.items.items():
+                groups.setdefault((it['session'].meta.get('course') or {}).get('name') or sid, []).append(it)
+            stats = {k: sections.summarize([x['laps'] for x in v], [x.get('rolling') for x in v]) for k, v in groups.items()}
+        for x in out:
+            x['stats'] = stats.get(x['course'] or x['id'])
+        return out
 
     # 最近開いた走行
     def recent(self):
@@ -422,7 +461,7 @@ def summary(sid, it):
         'clock': m['clock'], 'course': course.get('name'), 'line': it['line'], 'sectors': it['sectors'],
         'line_name': it['line_name'], 'export_line': {'line': course.get('line'), 'sectors': course.get('sectors') or []},
         'line_names': it['line_names'],
-        'sector_count': len(it['sectors']),
+        'sector_count': len(it['sectors']), 'splits': it.get('splits') or [], 'rolling': it.get('rolling'),
         'channels': m['channels'], 'rows': int(len(s.t)), 'rate_hz': m.get('rate_hz'),
         'gnss': None if g is None else {**(m.get('gnss') or {}), 'points': int(len(g['t']))},
         'videos': len(s.videos), 'notes': m.get('notes') or [], 'load_s': it['load_s'],
@@ -632,6 +671,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': False, 'error': str(e)}, 400)
             except OSError as e:
                 return self._json({'ok': False, 'error': f'残せませんでした（{e.strerror or e}）'}, 500)
+        if path == '/api/sections/auto':         # 区間の線を基準の周のブレーキの踏み始めに置く（SP-10-13）
+            sid, lap = body.get('id'), body.get('lap')
+            if not isinstance(sid, str) or not isinstance(lap, int) or isinstance(lap, bool):
+                return self._json({'ok': False, 'error': 'id・lap の形が違う'}, 400)
+            try:
+                found = self.store.sections_auto(sid, lap)
+            except (KeyError, ValueError, lines.LineError) as e:
+                return self._json({'ok': False, 'error': str(e.args[0])}, 400)
+            return self._json({'ok': True, 'auto': found, 'sessions': self.store.list(), 'rev': self.store.rev})
+        if path == '/api/sections/set':          # 区間の線を入れ替える（[] で消す）
+            try:
+                self.store.set_splits(body.get('course'), body.get('splits'))
+            except lines.LineError as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
+            return self._json({'ok': True, 'sessions': self.store.list(), 'rev': self.store.rev})
         if path.startswith('/api/lines/'):
             try:
                 sessions = self.store.set_lines(path.rsplit('/', 1)[1], body.get('course'), body.get('name'),

@@ -95,6 +95,20 @@ body.resizing video, body.resizing canvas, body.moving video, body.moving canvas
 .marks { text-align: left; }
 .mark { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-right: 4px; color: var(--muted); }
 .mark.warn { color: var(--warn); border-color: var(--warn); }
+/* 区間（コーナー）の表（SP-10-13） */
+.theory { font-size: 12px; margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+.theory b { font-weight: 600; }
+.secbox { padding: 8px 0 4px; border-top: 1px solid var(--line); margin-top: 8px; }
+.sechead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sechead h3 { font-size: 13px; margin: 0; font-weight: 600; }
+.sectable tbody tr:nth-child(even) { background: none; }
+.sectable td.sec { text-align: left; font-weight: 600; }
+.sectable tr.secfirst td { border-top: 1px solid var(--line); }
+.sectable tr.secstat td { color: var(--muted); font-size: 11.5px; text-align: left; padding-bottom: 4px; }
+.sectable tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+.sectable .faster { color: var(--ok); }
+.sectable .slower { color: var(--ng); }
+.sectable .lapdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
 .notes { margin-top: 6px; font-size: 12px; color: var(--muted); }
 .notes p { margin: 2px 0; }
 .graph { display: flex; flex-direction: column; }

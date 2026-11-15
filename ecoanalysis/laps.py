@@ -60,14 +60,20 @@ def crossings(gnss, line):
     return np.array(out)
 
 
+def _marks(start, end, crossings_):
+    """線ごとに、周の中で最初に越えた時刻（越えていなければ None）"""
+    out = []
+    for c in crossings_:
+        inside = c[(c > start) & (c < end)]
+        out.append(float(inside[0]) if len(inside) else None)
+    return out
+
+
 def _sector_times(start, end, sector_crossings):
     """周の中のセクターのタイム。線ごとに周の中で最初に越えた時刻で区切る。越えていない所と、順に並ばない線から先は None"""
     if not sector_crossings:
         return []
-    marks = []
-    for c in sector_crossings:
-        inside = c[(c > start) & (c < end)]
-        marks.append(float(inside[0]) if len(inside) else None)
+    marks = _marks(start, end, sector_crossings)
     bounds = [start] + marks + [end]
     out, broken = [], False
     for p, q in zip(bounds, bounds[1:]):
@@ -77,14 +83,16 @@ def _sector_times(start, end, sector_crossings):
     return out
 
 
-def cut(gnss, line, sectors=(), logger_laps=()):
-    """測位から周を切る。[{lap, start, end, time_s, sectors, gap, logger}]
+def cut(gnss, line, sectors=(), logger_laps=(), splits=()):
+    """測位から周を切る。[{lap, start, end, time_s, sectors, gap, logger}]（splits を渡せば splits・split_t も）
+    splits は区間（コーナー）の線（sections.py）。splits は区間のタイム（線の数＋1）、split_t は線を越えた時刻
     lap はロガーの周と同じ周ならその番号、それ以外は前後から続き番号。logger はロガーの周 {lap, time_s, diff_ms} か None。
     gap は周の中に1秒より長い測位の抜けがあるか"""
     c = crossings(gnss, line)
     if len(c) < 2:
         return []
     sec_c = [crossings(gnss, s) for s in sectors] if sectors and all(valid_line(s) for s in sectors) else []
+    split_c = [crossings(gnss, s) for s in splits] if splits and all(valid_line(s) for s in splits) else []
     t = np.asarray(gnss['t'], float)
     t = t[np.isfinite(t) & np.isfinite(np.asarray(gnss['lat'], float)) & np.isfinite(np.asarray(gnss['lon'], float))]
     laps = []
@@ -96,6 +104,9 @@ def cut(gnss, line, sectors=(), logger_laps=()):
         gap = bool(len(inside) < 2 or np.max(np.diff(np.concatenate(([a], inside, [b])))) > MAX_FIX_GAP_S)
         laps.append({'start': round(float(a), 3), 'end': round(float(b), 3), 'time_s': round(float(dur), 3),
                      'sectors': _sector_times(a, b, sec_c), 'gap': gap, 'logger': None})
+        if split_c:
+            laps[-1]['splits'] = _sector_times(a, b, split_c)
+            laps[-1]['split_t'] = [None if w is None else round(w, 3) for w in _marks(a, b, split_c)]
     _number(laps, list(logger_laps))
     return laps
 
@@ -133,8 +144,9 @@ def _number(laps, logger_laps):
             x['lap'] = i + 1
 
 
-def for_session(s, line=None, sectors=None):
-    """走行の周をコースの線で切る。line・sectors を渡さなければ書き出しに入っている線。(周の一覧, 使った線, 切れなかった理由)"""
+def for_session(s, line=None, sectors=None, splits=()):
+    """走行の周をコースの線で切る。line・sectors を渡さなければ書き出しに入っている線。(周の一覧, 使った線, 切れなかった理由)
+    splits：区間の線（書き出しには無い。解析アプリの中だけ）"""
     course = s.meta.get('course') or {}
     line = line or course.get('line')
     sectors = course.get('sectors') or [] if sectors is None else sectors
@@ -142,4 +154,4 @@ def for_session(s, line=None, sectors=None):
         return None, None, '測位が入っていない'
     if not valid_line(line):
         return None, None, 'コースの線が入っていない'
-    return cut(s.gnss, line, sectors, s.laps), line, None
+    return cut(s.gnss, line, sectors, s.laps, splits), line, None
