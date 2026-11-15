@@ -112,7 +112,8 @@
         <button type="button" data-tool="board" title="キーの 8、または図の上で右ボタンを押したまま左上へ引く">看板</button></div>
       <div class="row">
         <label title="点を動かすとき、つかんだ点からこの距離の内の点も一緒に動きます（離れるほど少しだけ）。0 ならつかんだ1点だけ。なめらかにするときは、この半分の幅（1 m より細くはしない）でならします">なめらかさ <input id="oeradius" type="number" min="0" max="60" step="1" value="10"> m</label>
-        <label title="足すゼブラの帯の幅">ゼブラの幅 <input id="oezebraw" type="number" min="0.2" max="5" step="0.1" value="1"> m</label>
+        <label title="足すゼブラの帯の幅（足したあとは、点を動かすで外側の端をつかむと所ごとに変えられます）">ゼブラの幅 <input id="oezebraw" type="number" min="0.2" max="5" step="0.1" value="1"> m</label>
+        <label title="足すゼブラの両端を、この長さで細くして尖らせます（0 なら四角い端）">端の細り <input id="oezebrataper" type="number" min="0" max="20" step="0.5" value="2"> m</label>
         <label title="看板に書く字（12字まで）">看板の字 <input id="oeboard" type="text" maxlength="12" value="100" class="short"></label>
         <span class="grow"></span>
         <button id="oeundo" type="button" disabled title="Ctrl+Z でも戻せます">ひとつ戻す</button>

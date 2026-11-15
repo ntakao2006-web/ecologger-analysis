@@ -202,7 +202,7 @@ def _check_pts(pts, what):
 
 
 def check_edit(data):
-    """手で直したコース図 {lines: [[[lat, lon], …]], kerbs: [{w, pts}], boards: [{lat, lon, text}]} の形を確かめて、決まった形にして返す"""
+    """手で直したコース図 {lines: [[[lat, lon], …]], kerbs: [{pts, ws, side} か前の形 {w, pts}], boards: [{lat, lon, text}]} の形を確かめて、決まった形にして返す"""
     if not isinstance(data, dict):
         raise OutlineError('形が違う')
     lines_, kerbs_, boards_ = data.get('lines'), data.get('kerbs', []), data.get('boards', [])
@@ -212,13 +212,23 @@ def check_edit(data):
         raise OutlineError('数が多すぎる')
     lines_ = [_check_pts(ln, '縁') for ln in lines_]
     out_k = []
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
     for k in kerbs_:
         if not isinstance(k, dict):
             raise OutlineError('ゼブラの形が違う')
-        w = k.get('w', ZEBRA_W_M)
-        if not isinstance(w, (int, float)) or isinstance(w, bool) or not (0.2 <= w <= 5):
+        pts = _check_pts(k.get('pts'), 'ゼブラ')
+        if 'ws' in k:       # 縁にくっつく形：pts は内側の端、ws は点ごとの幅（端は 0 まで細る）、side は外側の向き
+            ws, side = k.get('ws'), k.get('side')
+            if not isinstance(ws, list) or len(ws) != len(pts) or not all(num(w) and 0 <= w <= 5 for w in ws) or max(ws) <= 0:
+                raise OutlineError('ゼブラの幅が違う')
+            if side not in (1, -1):
+                raise OutlineError('ゼブラの向きが違う')
+            out_k.append({'pts': pts, 'ws': [round(float(w), 2) for w in ws], 'side': side})
+            continue
+        w = k.get('w', ZEBRA_W_M)           # 前の形：pts は帯の真ん中、幅は決まった w
+        if not num(w) or not (0.2 <= w <= 5):
             raise OutlineError('ゼブラの幅が違う')
-        out_k.append({'w': float(w), 'pts': _check_pts(k.get('pts'), 'ゼブラ')})
+        out_k.append({'w': float(w), 'pts': pts})
     if sum(len(x) for x in lines_) + sum(len(k['pts']) for k in out_k) > EDIT_MAX_POINTS:
         raise OutlineError('点が多すぎる')
     out_b = []

@@ -1,19 +1,29 @@
 // コース図のエディタ。自動で作ったコース図（道路の縁・ゼブラ・距離の看板）を手で直す。
 // 座標はコース図（map.js）と同じ m（東が x、北が y）。図への描き方とマウスは map.js が受け持ち、
 // ここは中身と道具だけを持つ（map.js の setEditor へ渡す）。直したものは裏がコースごとに残し、自動のものより先に出す。
+//
+// ゼブラは {pts, ws, side}：pts は内側の端（コースの縁の上の点）、ws は点ごとの幅（m、端は細くして 0 まで）、
+// 外側の端は pts から走る向きの左（side = 1）か右（side = -1）へ ws だけ離れた所。縁にくっついていて、
+// 縁を動かす・なめらかにする・まっすぐにすると一緒に動く。前の形 {w, pts（帯の真ん中）} も読む。
 'use strict';
 
 const OutlineEditor = (() => {
   const PICK_PX = 12;        // 点・線を拾うのはこの画素の内
   const STEP_M = 2;          // まっすぐにした所・つないだ所の点の間隔（自動の横断面と同じ）
   const UNDO_MAX = 60;
+  const GLUE_M = 0.3;        // ゼブラの内側の点が縁からこの距離の内なら、その縁にくっついているとみる
+  const RESNAP_M = 6;        // まっすぐにした縁へ、ゼブラの点を載せ直すのはこの距離まで
+  const END_KEEP_M = 4;      // ゼブラの端を伸び縮みさせるとき、端からこの長さの幅の形（細り）を端と一緒に動かす
+  const MIN_LEN_M = 1;       // ゼブラはこの長さより短くしない
+  const LEGACY_SNAP_M = 1;   // 前の形のゼブラを読むとき、内側の端をこの距離の内の縁へ載せる
+  const W_MAX = 5;
   const TOOLS = {
-    move: '縁・ゼブラの点をつかんで動かします。なめらかさの距離の内の点も、離れるほど少しずつ一緒に動きます（0 なら1点だけ）。つかめない所を引くと図が動きます',
-    smooth: '同じ線の上を2か所押すと、そのあいだの細かいガタガタをならします。カーブの形は残します。同じ所を2回押すと線1本まるごと。ならす幅は「なめらかさ」の半分で、押し直すほどなめらかになります',
-    straight: '同じ線の上を2か所押すと、そのあいだをまっすぐにします（輪の線は短いほうのあいだ）',
-    erase: '同じ線の上を2か所押すと、そのあいだを消します（線が2本に分かれます）。ゼブラにも使えます',
+    move: '縁の点をつかんで動かします。なめらかさの距離の内の点も、離れるほど少しずつ一緒に動きます（0 なら1点だけ）。ゼブラは外側の端をつかむと幅が変わり（なめらかさの距離の内も少しずつ）、両端の四角をつかむと縁に沿って伸び縮みします。つかめない所を引くと図が動きます',
+    smooth: '同じ縁の上を2か所押すと、そのあいだの細かいガタガタをならします。カーブの形は残します。同じ所を2回押すと線1本まるごと。ならす幅は「なめらかさ」の半分で、押し直すほどなめらかになります。ゼブラは縁と一緒に動きます',
+    straight: '同じ縁の上を2か所押すと、そのあいだをまっすぐにします（輪の線は短いほうのあいだ）。ゼブラは縁と一緒に動きます',
+    erase: '同じ線の上を2か所押すと、そのあいだを消します（線が2本に分かれます）。同じゼブラの上を2か所押すと、ゼブラのそのあいだを消します',
     join: '線の端を押してから、つなぎたい所（別の線の端か、同じ線のもう一方の端）を押すと、まっすぐにつなぎます',
-    zebraAdd: '縁の上を2か所押すと、そのあいだの縁の外側にゼブラを足します（幅は下の欄）',
+    zebraAdd: '縁の上を2か所押すと、そのあいだの縁の外側にゼブラを足します（幅・端の細りは下の欄）。ゼブラは縁にくっつき、縁を動かすと一緒に動きます',
     zebraDel: '消したいゼブラを押します',
     board: '押した所に看板（字は下の欄）を置きます。看板を押すと消します',
   };
@@ -23,12 +33,71 @@ const OutlineEditor = (() => {
     ['erase', '消す'], ['zebraAdd', 'ゼブラを足す'], ['zebraDel', 'ゼブラを消す'], ['board', '看板'],
   ];
 
-  let st = null;             // {lines: [{pts, closed}], kerbs: [{w, pts}], boards: [{x, y, text}], undo: [], tool, pend, grab, hover, dirty}
-  let ui = null;             // {radius(), zebraW(), boardText(), onChange()}
+  let st = null;             // {lines: [{pts, closed}], kerbs: [{pts, ws, side}], boards: [{x, y, text}], undo: [], tool, pend, grab, hover, dirty}
+  let ui = null;             // {radius(), zebraW(), zebraTaper(), boardText(), onChange()}
 
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const clampW = (w) => (Number.isFinite(w) ? Math.min(W_MAX, Math.max(0, w)) : 1);
+
+  // 線分 a→b へ q を下ろした所 {d, t}
+  function segProj(a, b, q) {
+    const vx = b[0] - a[0], vy = b[1] - a[1], L2 = vx * vx + vy * vy;
+    const t = L2 > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * vx + (q[1] - a[1]) * vy) / L2)) : 0;
+    return { d: Math.hypot(a[0] + vx * t - q[0], a[1] + vy * t - q[1]), t };
+  }
+  // 点 k での、走る向き（点の順）の左の向き
+  function normalAt(pts, k) {
+    const n = pts.length, a = pts[Math.max(0, k - 1)], b = pts[Math.min(n - 1, k + 1)];
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    return [-(b[1] - a[1]) / L, (b[0] - a[0]) / L];
+  }
+  function cumLen(pts) {
+    const S = [0];
+    for (let k = 1; k < pts.length; k++) S.push(S[k - 1] + dist(pts[k - 1], pts[k]));
+    return S;
+  }
+  // ゼブラの外側の端・帯の真ん中
+  function edgeOf(z, f) {
+    return z.pts.map((p, k) => { const v = normalAt(z.pts, k), s = z.side * z.ws[k] * f; return [p[0] + v[0] * s, p[1] + v[1] * s]; });
+  }
+  const outerOf = (z) => edgeOf(z, 1);
+  const midOf = (z) => edgeOf(z, 0.5);
+  // 端を細くした幅：両端から T の内で 0 → w（まっすぐに）
+  function taperWidths(pts, w, T) {
+    const S = cumLen(pts), L = S[S.length - 1];
+    return S.map((s) => (T > 0 ? w * Math.max(0, Math.min(1, s / T, (L - s) / T)) : w));
+  }
 
   // ---------------------------------------------------------------- 出し入れ
+  // いちばん近い縁の上の点 {d, p}
+  function nearestOnLines(lines, q) {
+    let best = { d: Infinity, p: q };
+    for (const l of lines) {
+      const n = l.pts.length;
+      for (let i = 0; i < (l.closed ? n : n - 1); i++) {
+        const a = l.pts[i], b = l.pts[(i + 1) % n], r = segProj(a, b, q);
+        if (r.d < best.d) best = { d: r.d, p: [a[0] + (b[0] - a[0]) * r.t, a[1] + (b[1] - a[1]) * r.t] };
+      }
+    }
+    return best;
+  }
+  const nearestLineDist = (lines, q) => nearestOnLines(lines, q).d;
+  function kerbFrom(z, xy, lines) {
+    if (!z || !Array.isArray(z.pts) || z.pts.length < 2) return null;
+    const pts = xy(z.pts);
+    if (Array.isArray(z.ws) && z.ws.length === pts.length) return { pts, ws: z.ws.map((w) => clampW(+w)), side: z.side < 0 ? -1 : 1 };
+    // 前の形（帯の真ん中の線と決まった幅）：縁に近い側を内側にする
+    const w = clampW(+z.w || 1), m = Math.floor(pts.length / 2), nm = normalAt(pts, m);
+    const dIn = (s) => nearestLineDist(lines, [pts[m][0] - s * nm[0] * w / 2, pts[m][1] - s * nm[1] * w / 2]);
+    const side = dIn(1) <= dIn(-1) ? 1 : -1;
+    // 内側の端は、縁から LEGACY_SNAP_M の内なら縁の上へ載せる（縁にくっつけて、縁と一緒に動くように）
+    const inner = pts.map((p, k) => {
+      const v = normalAt(pts, k), q = [p[0] - side * v[0] * w / 2, p[1] - side * v[1] * w / 2], s = nearestOnLines(lines, q);
+      return s.d <= LEGACY_SNAP_M ? s.p : q;
+    });
+    return { pts: inner, ws: pts.map(() => w), side };
+  }
+
   function load(outline, toXY, o) {
     ui = o;
     const xy = (pts) => pts.map((q) => toXY(q[0], q[1]));
@@ -38,7 +107,7 @@ const OutlineEditor = (() => {
       if (closed) pts.pop();
       return { pts, closed };
     });
-    const kerbs = (outline.kerbs || []).filter((z) => z && z.pts && z.pts.length >= 2).map((z) => ({ w: z.w || 1, pts: xy(z.pts) }));
+    const kerbs = (outline.kerbs || []).map((z) => kerbFrom(z, xy, lines)).filter(Boolean);
     const boards = (outline.boards || []).map((b) => { const [x, y] = toXY(b.lat, b.lon); return { x, y, text: b.text }; });
     st = { lines, kerbs, boards, undo: [], redo: [], tool: 'move', pend: null, grab: null, hover: null, dirty: false };
   }
@@ -47,7 +116,7 @@ const OutlineEditor = (() => {
     const ll = (pts) => pts.map((p) => toLatLon(p[0], p[1]));
     return {
       lines: st.lines.filter((l) => l.pts.length >= 2).map((l) => ll(l.closed ? l.pts.concat([l.pts[0]]) : l.pts)),
-      kerbs: st.kerbs.filter((z) => z.pts.length >= 2).map((z) => ({ w: z.w, pts: ll(z.pts) })),
+      kerbs: st.kerbs.filter((z) => z.pts.length >= 2).map((z) => ({ pts: ll(z.pts), ws: z.ws.map((w) => Math.round(w * 100) / 100), side: z.side })),
       boards: st.boards.map((b) => { const [lat, lon] = toLatLon(b.x, b.y); return { lat, lon, text: b.text }; }),
     };
   }
@@ -80,37 +149,157 @@ const OutlineEditor = (() => {
     return true;
   }
 
-  // ---------------------------------------------------------------- 拾う
-  // いちばん近い点 {kind 'line'|'kerb', idx, i, d}（m）。kinds：拾う種類
-  function pickVertex(x, y, tol, kinds) {
+  // ---------------------------------------------------------------- ゼブラを縁にくっつける
+  // 縁 line の上に載っているゼブラの点：[{z, k, j, t}]（線分 j の t の所）
+  function glue(line) {
+    const P = line.pts, n = P.length, segs = line.closed ? n : n - 1, out = [];
+    if (segs < 1 || !st.kerbs.length) return out;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of P) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+    for (const z of st.kerbs) {
+      for (let k = 0; k < z.pts.length; k++) {
+        const q = z.pts[k];
+        if (q[0] < x0 - GLUE_M || q[0] > x1 + GLUE_M || q[1] < y0 - GLUE_M || q[1] > y1 + GLUE_M) continue;
+        let best = null;
+        for (let j = 0; j < segs; j++) {
+          const r = segProj(P[j], P[(j + 1) % n], q);
+          if (r.d <= GLUE_M && (!best || r.d < best.d)) best = { j, t: r.t, d: r.d };
+        }
+        if (best) out.push({ z, k, j: best.j, t: best.t });
+      }
+    }
+    return out;
+  }
+  // 点の番号が変わらない直し（点を動かす・ならす）のあと：同じ線分の同じ所へ
+  function applyGlue(line, glued) {
+    const P = line.pts, n = P.length;
+    for (const g of glued) {
+      const a = P[g.j], b = P[(g.j + 1) % n];
+      if (a && b) g.z.pts[g.k] = [a[0] + (b[0] - a[0]) * g.t, a[1] + (b[1] - a[1]) * g.t];
+    }
+  }
+  // 点の番号が変わる直し（まっすぐ）のあと：いちばん近い所へ載せ直す
+  function resnap(line, glued) {
+    const P = line.pts, n = P.length, segs = line.closed ? n : n - 1;
+    for (const g of glued) {
+      const q = g.z.pts[g.k];
+      let best = null;
+      for (let j = 0; j < segs; j++) {
+        const a = P[j], b = P[(j + 1) % n], r = segProj(a, b, q);
+        if (r.d <= RESNAP_M && (!best || r.d < best.d)) best = { d: r.d, p: [a[0] + (b[0] - a[0]) * r.t, a[1] + (b[1] - a[1]) * r.t] };
+      }
+      if (best) g.z.pts[g.k] = best.p;
+    }
+  }
+
+  // 縁に沿った距離（線の頭から）。{S, L}（輪なら L は1周）
+  function lineLen(line) {
+    const S = cumLen(line.pts), n = line.pts.length;
+    return { S, L: line.closed ? S[n - 1] + dist(line.pts[n - 1], line.pts[0]) : S[n - 1] };
+  }
+  function paramOf(line, cl, q) {           // q を縁へ下ろした所の、縁に沿った距離
+    const P = line.pts, n = P.length;
     let best = null;
-    const scan = (arr, kind) => arr.forEach((it, idx) => it.pts.forEach((p, i) => {
-      const d = Math.hypot(p[0] - x, p[1] - y);
-      if (d <= tol && (!best || d < best.d)) best = { kind, idx, i, d };
-    }));
-    if (kinds.includes('line')) scan(st.lines, 'line');
-    if (kinds.includes('kerb')) scan(st.kerbs, 'kerb');
+    for (let j = 0; j < (line.closed ? n : n - 1); j++) {
+      const r = segProj(P[j], P[(j + 1) % n], q);
+      if (!best || r.d < best.d) best = { d: r.d, s: cl.S[j] + r.t * dist(P[j], P[(j + 1) % n]) };
+    }
     return best;
   }
-  // 線分まで含めていちばん近い所（点の番号はその線分の近いほうの端）
+  function pointAt(line, cl, s) {
+    const P = line.pts, n = P.length, segs = line.closed ? n : n - 1;
+    s = line.closed ? ((s % cl.L) + cl.L) % cl.L : Math.max(0, Math.min(cl.L, s));
+    for (let j = 0; j < segs; j++) {
+      const s1 = j + 1 < n ? cl.S[j + 1] : cl.L;
+      if (s <= s1 || j === segs - 1) {
+        const a = P[j], b = P[(j + 1) % n], L = s1 - cl.S[j], t = L > 0 ? Math.max(0, Math.min(1, (s - cl.S[j]) / L)) : 0;
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      }
+    }
+    return P[n - 1].slice();
+  }
+  // 縁の s0 から向き dir（+1 頭→終わり、-1 逆）へ len だけの点（縁の点と両端）
+  function pathAlong(line, cl, s0, dir, len) {
+    const P = line.pts, out = [pointAt(line, cl, s0)], vs = [];
+    for (let j = 0; j < P.length; j++) {
+      let u = (cl.S[j] - s0) * dir;
+      if (line.closed) u = ((u % cl.L) + cl.L) % cl.L;
+      if (u > 1e-6 && u < len - 1e-6) vs.push([u, j]);
+    }
+    vs.sort((a, b) => a[0] - b[0]);
+    for (const [, j] of vs) out.push(P[j].slice());
+    out.push(pointAt(line, cl, s0 + dir * len));
+    return out;
+  }
+  // ゼブラが載っている縁（真ん中の点のいちばん近い縁）
+  function lineUnder(z) {
+    const q = z.pts[Math.floor(z.pts.length / 2)];
+    let best = null;
+    for (const l of st.lines) {
+      const n = l.pts.length;
+      for (let i = 0; i < (l.closed ? n : n - 1); i++) {
+        const d = segProj(l.pts[i], l.pts[(i + 1) % n], q).d;
+        if (!best || d < best.d) best = { d, l };
+      }
+    }
+    return best && best.d <= 1 ? best.l : null;
+  }
+  function interp(X, Y, x) {
+    if (x <= X[0]) return Y[0];
+    for (let i = 1; i < X.length; i++) if (x <= X[i]) { const t = X[i] > X[i - 1] ? (x - X[i - 1]) / (X[i] - X[i - 1]) : 0; return Y[i - 1] + (Y[i] - Y[i - 1]) * t; }
+    return Y[Y.length - 1];
+  }
+
+  // ---------------------------------------------------------------- 拾う
+  // いちばん近い縁の点 {kind 'line', idx, i, d}（m）
+  function pickVertex(x, y, tol) {
+    let best = null;
+    st.lines.forEach((it, idx) => it.pts.forEach((p, i) => {
+      const d = Math.hypot(p[0] - x, p[1] - y);
+      if (d <= tol && (!best || d < best.d)) best = { kind: 'line', idx, i, d };
+    }));
+    return best;
+  }
+  // ゼブラのつかみ所：両端（内側の端の頭・終わり、kind 'kerbEnd'）と外側の端の点（kind 'kerbW'）。端を先に
+  function pickHandle(x, y, tol) {
+    let end = null, w = null;
+    st.kerbs.forEach((z, idx) => {
+      const m = z.pts.length;
+      for (const i of [0, m - 1]) {
+        const d = Math.hypot(z.pts[i][0] - x, z.pts[i][1] - y);
+        if (d <= tol && (!end || d < end.d)) end = { kind: 'kerbEnd', idx, i, d };
+      }
+      outerOf(z).forEach((p, i) => {
+        const d = Math.hypot(p[0] - x, p[1] - y);
+        if (d <= tol && (!w || d < w.d)) w = { kind: 'kerbW', idx, i, d };
+      });
+    });
+    return end || w;
+  }
+  // 線分まで含めていちばん近い所（点の番号はその線分の近いほうの端）。ゼブラは帯の真ん中の線で、帯の内なら拾う
   function pickPath(x, y, tol, kinds) {
     let best = null;
-    const scan = (arr, kind) => arr.forEach((it, idx) => {
-      const n = it.pts.length, closed = kind === 'line' && it.closed;
+    const scan = (pts, closed, kind, idx, extra) => {
+      const n = pts.length;
       for (let i = 0; i < (closed ? n : n - 1); i++) {
-        const a = it.pts[i], b = it.pts[(i + 1) % n];
-        const vx = b[0] - a[0], vy = b[1] - a[1], L2 = vx * vx + vy * vy;
-        const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - a[0]) * vx + (y - a[1]) * vy) / L2)) : 0;
-        const d = Math.hypot(a[0] + vx * t - x, a[1] + vy * t - y);
-        if (d <= tol && (!best || d < best.d)) best = { kind, idx, i: t < 0.5 ? i : (i + 1) % n, d };
+        const r = segProj(pts[i], pts[(i + 1) % n], [x, y]);
+        const d = Math.max(0, r.d - extra);
+        if (d <= tol && (!best || d < best.d)) best = { kind, idx, i: r.t < 0.5 ? i : (i + 1) % n, d };
       }
-    });
-    if (kinds.includes('line')) scan(st.lines, 'line');
-    if (kinds.includes('kerb')) scan(st.kerbs, 'kerb');
+    };
+    if (kinds.includes('line')) st.lines.forEach((l, idx) => scan(l.pts, l.closed, 'line', idx, 0));
+    if (kinds.includes('kerb')) st.kerbs.forEach((z, idx) => scan(midOf(z), false, 'kerb', idx, Math.max(...z.ws) / 2));
     return best;
   }
   const itemOf = (p) => (p.kind === 'line' ? st.lines[p.idx] : st.kerbs[p.idx]);
   const isClosed = (p) => p.kind === 'line' && st.lines[p.idx].closed;
+  function posOf(p) {                // 印を出す所
+    const it = itemOf(p);
+    if (!it || !it.pts[p.i]) return null;
+    if (p.kind === 'kerbW') return outerOf(it)[p.i];
+    if (p.kind === 'kerb') return midOf(it)[p.i];
+    return it.pts[p.i];
+  }
 
   // 線の上の2点 i・j のあいだ。開いた線は番号の小さいほうから、輪は短いほう。{from, to}（to は from から先へ数えた番号。輪なら n を越えてよい）
   function span(it, closed, i, j) {
@@ -133,6 +322,7 @@ const OutlineEditor = (() => {
     const { from, to } = span(it, closed, p.i, q.i);
     if (to - from < 1) return false;
     snapshot();
+    const glued = glue(it);
     const a = it.pts[from % n], b = it.pts[to % n];
     if (!closed) {
       it.pts = it.pts.slice(0, from + 1).concat(between(a, b), it.pts.slice(to));
@@ -141,6 +331,7 @@ const OutlineEditor = (() => {
       const t = to - from;
       it.pts = [r[0]].concat(between(a, b), r.slice(t));
     }
+    resnap(it, glued);
     return true;
   }
 
@@ -157,8 +348,7 @@ const OutlineEditor = (() => {
     } else ({ from, to } = span(it, closed, p.i, q.i));
     if (to - from < 2) return false;
     const P = it.pts;
-    const S = [0];                   // 頭からの、線に沿った距離
-    for (let k = 1; k < n; k++) S.push(S[k - 1] + dist(P[k - 1], P[k]));
+    const S = cumLen(P);             // 頭からの、線に沿った距離
     const L = closed ? S[n - 1] + dist(P[n - 1], P[0]) : S[n - 1];
     const gauss = (src, k) => {     // 点 k のまわりの重みつき平均（輪は回り込み、開いた線は端で止める）
       let sx = 0, sy = 0, sw = 0;
@@ -182,6 +372,7 @@ const OutlineEditor = (() => {
     for (let k = from + 1; k <= to; k++) along.push(along[along.length - 1] + dist(P[(k - 1) % n], P[k % n]));
     const total = along[along.length - 1], ramp = Math.min(sigma, total / 2);
     snapshot();
+    const glued = glue(it);
     const out = P.map((pt) => pt.slice());
     for (let k = from; k <= to; k++) {
       const i = k % n;
@@ -197,6 +388,7 @@ const OutlineEditor = (() => {
       out[i] = [P[i][0] + w * (sx - P[i][0]), P[i][1] + w * (sy - P[i][1])];
     }
     it.pts = out;
+    applyGlue(it, glued);
     return true;
   }
 
@@ -205,7 +397,12 @@ const OutlineEditor = (() => {
     const { from, to } = span(it, closed, p.i, q.i);
     if (to - from < 1) return false;
     snapshot();
-    const arr = p.kind === 'line' ? st.lines : st.kerbs;
+    if (p.kind === 'kerb') {        // ゼブラ：そのあいだを抜いて、前後の2本に
+      const made = [[0, from], [to, n - 1]].filter(([a, b]) => b - a >= 1)
+        .map(([a, b]) => ({ pts: it.pts.slice(a, b + 1), ws: it.ws.slice(a, b + 1), side: it.side }));
+      st.kerbs.splice(p.idx, 1, ...made);
+      return true;
+    }
     let pieces;
     if (!closed) {
       pieces = [it.pts.slice(0, from + 1), it.pts.slice(to)];
@@ -213,8 +410,7 @@ const OutlineEditor = (() => {
       const r = it.pts.slice(from).concat(it.pts.slice(0, from));
       pieces = [r.slice(to - from).concat([r[0]])];
     }
-    const made = pieces.filter((x) => x.length >= 2).map((pts) => (p.kind === 'line' ? { pts, closed: false } : { w: it.w, pts }));
-    arr.splice(p.idx, 1, ...made);
+    st.lines.splice(p.idx, 1, ...pieces.filter((x) => x.length >= 2).map((pts) => ({ pts, closed: false })));
     return true;
   }
 
@@ -255,66 +451,111 @@ const OutlineEditor = (() => {
     const { from, to } = span(it, it.closed, p.i, q.i);
     if (to - from < 1) return false;
     const pts = [];
-    for (let k = from; k <= to; k++) pts.push(it.pts[k % n]);
-    const w = ui.zebraW();
+    for (let k = from; k <= to; k++) pts.push(it.pts[k % n].slice());
     // 外向き：走った線（基準の周）から離れる向き。真ん中の点で決める
-    const nrm = (k) => {
-      const a = pts[Math.max(0, k - 1)], b = pts[Math.min(pts.length - 1, k + 1)];
-      const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      return [-(b[1] - a[1]) / L, (b[0] - a[0]) / L];
-    };
-    const mid = pts[Math.floor(pts.length / 2)], nm = nrm(Math.floor(pts.length / 2));
+    const m = Math.floor(pts.length / 2), mid = pts[m], nm = normalAt(pts, m);
     const tr = geo.nearestTrack(mid[0], mid[1]);
-    let sg = 1;
-    if (tr) sg = (mid[0] - tr[0]) * nm[0] + (mid[1] - tr[1]) * nm[1] >= 0 ? 1 : -1;
+    const side = tr && (mid[0] - tr[0]) * nm[0] + (mid[1] - tr[1]) * nm[1] < 0 ? -1 : 1;
     snapshot();
-    st.kerbs.push({ w, pts: pts.map((pt, k) => { const v = nrm(k); return [pt[0] + sg * v[0] * w / 2, pt[1] + sg * v[1] * w / 2]; }) });
+    st.kerbs.push({ pts, ws: taperWidths(pts, ui.zebraW(), ui.zebraTaper ? ui.zebraTaper() : 0), side });
     return true;
   }
 
   // ---------------------------------------------------------------- マウス（map.js から。x・y は m、geo {k 画素/m, nearestTrack}）
   function tolM(geo) { return PICK_PX / geo.k; }
 
+  // 点を動かすでつかめる所：縁の点か、ゼブラの端・外側の端の近いほう（ゼブラの端は縁の点より先）
+  function pickGrab(x, y, tol) {
+    const a = pickVertex(x, y, tol), b = pickHandle(x, y, tol);
+    if (a && b) return b.kind === 'kerbEnd' || b.d <= a.d ? b : a;
+    return a || b;
+  }
+
+  // 点 i から、点の並びに沿った距離（輪なら近いほうの向きで）
+  function alongFrom(pts, closed, i) {
+    const n = pts.length, s = new Array(n).fill(Infinity);
+    if (closed) {
+      const fwd = new Array(n).fill(0);
+      for (let c = 1; c < n; c++) fwd[(i + c) % n] = fwd[(i + c - 1) % n] + dist(pts[(i + c - 1) % n], pts[(i + c) % n]);
+      const L = fwd[(i + n - 1) % n] + dist(pts[(i + n - 1) % n], pts[i]);
+      for (let k = 0; k < n; k++) s[k] = Math.min(fwd[k], L - fwd[k]);
+    } else {
+      s[i] = 0;
+      for (let k = i + 1; k < n; k++) s[k] = s[k - 1] + dist(pts[k - 1], pts[k]);
+      for (let k = i - 1; k >= 0; k--) s[k] = s[k + 1] + dist(pts[k + 1], pts[k]);
+    }
+    return s;
+  }
+  const falloff = (s, R, here) => (here ? 1 : R > 0 && s < R ? (1 - (s / R) ** 2) ** 2 : 0);
+
   // 押した：つかんだら true（図を動かさない）
   function down(x, y, geo) {
     if (!st || st.tool !== 'move') return false;
-    const p = pickVertex(x, y, tolM(geo), ['line', 'kerb']);
+    const p = pickGrab(x, y, tolM(geo));
     if (!p) return false;
-    const keepRedo = st.redo;
-    snapshot();
-    const it = itemOf(p), n = it.pts.length, closed = isClosed(p);
-    // つかんだ点からの、線に沿った距離（輪なら近いほうの向きで）
-    const s = new Array(n).fill(Infinity);
-    if (closed) {
-      const fwd = new Array(n).fill(0);
-      for (let c = 1; c < n; c++) fwd[(p.i + c) % n] = fwd[(p.i + c - 1) % n] + dist(it.pts[(p.i + c - 1) % n], it.pts[(p.i + c) % n]);
-      const L = fwd[(p.i + n - 1) % n] + dist(it.pts[(p.i + n - 1) % n], it.pts[p.i]);
-      for (let k = 0; k < n; k++) s[k] = Math.min(fwd[k], L - fwd[k]);
-    } else {
-      s[p.i] = 0;
-      for (let k = p.i + 1; k < n; k++) s[k] = s[k - 1] + dist(it.pts[k - 1], it.pts[k]);
-      for (let k = p.i - 1; k >= 0; k--) s[k] = s[k + 1] + dist(it.pts[k + 1], it.pts[k]);
+    const g = { p, x0: x, y0: y, keepRedo: st.redo, R: Math.max(0, ui.radius()) };
+    if (p.kind === 'line') {
+      const it = st.lines[p.idx];
+      Object.assign(g, { orig: it.pts.map((q) => q.slice()), s: alongFrom(it.pts, it.closed, p.i), glued: glue(it) });
+    } else if (p.kind === 'kerbW') {
+      const z = st.kerbs[p.idx];
+      Object.assign(g, { origW: z.ws.slice(), nrm: normalAt(z.pts, p.i), s: alongFrom(z.pts, false, p.i) });
+    } else {                         // ゼブラの端：縁に沿って伸び縮み
+      const z = st.kerbs[p.idx], line = lineUnder(z);
+      if (!line || z.pts.length < 2) return false;
+      const fixedIsLast = p.i === 0;
+      const ord = fixedIsLast ? z.pts.slice().reverse() : z.pts.slice();     // 動かない端から
+      const cl = lineLen(line), sF = paramOf(line, cl, ord[0]).s, s2 = paramOf(line, cl, ord[1]).s;
+      let dir = s2 - sF;
+      if (line.closed && Math.abs(dir) > cl.L / 2) dir = -dir;
+      Object.assign(g, { line, cl, sF, dir: dir >= 0 ? 1 : -1, fixedIsLast, U: cumLen(ord),
+                         W: fixedIsLast ? z.ws.slice().reverse() : z.ws.slice(), origPts: z.pts.map((q) => q.slice()) });
     }
-    st.grab = { p, x0: x, y0: y, orig: it.pts.map((q) => q.slice()), s, R: Math.max(0, ui.radius()), keepRedo };
+    snapshot();
+    st.grab = g;
     return true;
   }
 
   function move(x, y) {
     const g = st && st.grab;
     if (!g) return;
-    const it = itemOf(g.p), dx = x - g.x0, dy = y - g.y0;
-    for (let k = 0; k < it.pts.length; k++) {
-      const s = g.s[k];
-      const w = k === g.p.i ? 1 : g.R > 0 && s < g.R ? (1 - (s / g.R) ** 2) ** 2 : 0;
-      it.pts[k] = [g.orig[k][0] + w * dx, g.orig[k][1] + w * dy];
+    const dx = x - g.x0, dy = y - g.y0;
+    if (g.p.kind === 'line') {
+      const it = st.lines[g.p.idx];
+      for (let k = 0; k < it.pts.length; k++) {
+        const w = falloff(g.s[k], g.R, k === g.p.i);
+        it.pts[k] = [g.orig[k][0] + w * dx, g.orig[k][1] + w * dy];
+      }
+      applyGlue(it, g.glued);
+    } else if (g.p.kind === 'kerbW') {
+      const z = st.kerbs[g.p.idx], d = (dx * g.nrm[0] + dy * g.nrm[1]) * z.side;
+      for (let k = 0; k < z.ws.length; k++) z.ws[k] = clampW(g.origW[k] + falloff(g.s[k], g.R, k === g.p.i) * d);
+    } else {
+      const z = st.kerbs[g.p.idx], { line, cl } = g;
+      let len = (paramOf(line, cl, [x, y]).s - g.sF) * g.dir;
+      if (line.closed) {
+        len = ((len % cl.L) + cl.L) % cl.L;
+        if (len > cl.L - MIN_LEN_M) len = MIN_LEN_M;            // 1周を越えたら、縮めすぎとみる
+      } else len = Math.min(len, g.dir > 0 ? cl.L - g.sF : g.sF);
+      len = Math.max(MIN_LEN_M, len);
+      const pts = pathAlong(line, cl, g.sF, g.dir, len), U = cumLen(pts);
+      const Lold = g.U[g.U.length - 1], Lnew = U[U.length - 1], R = Math.min(END_KEEP_M, Lold / 2, Lnew / 2);
+      const wOld = (u) => interp(g.U, g.W, u);
+      // 動く端から R の内の幅の形（細り）は端と一緒に動き、伸ばした所は手前の幅で埋める
+      const ws = U.map((u) => (u >= Lnew - R ? wOld(Lold - (Lnew - u)) : u <= Lold - R ? wOld(u) : wOld(Lold - R)));
+      z.pts = g.fixedIsLast ? pts.reverse() : pts;
+      z.ws = g.fixedIsLast ? ws.reverse() : ws;
     }
   }
   function up() {
     if (!st || !st.grab) return;
     const g = st.grab;
     st.grab = null;
-    const it = itemOf(g.p);
-    if (dist(it.pts[g.p.i], g.orig[g.p.i]) < 1e-6) { st.undo.pop(); st.redo = g.keepRedo; } else changed();   // 動かさなければ無かったことに
+    let moved;
+    if (g.p.kind === 'line') moved = dist(st.lines[g.p.idx].pts[g.p.i], g.orig[g.p.i]) > 1e-6;
+    else if (g.p.kind === 'kerbW') moved = st.kerbs[g.p.idx].ws.some((w, k) => Math.abs(w - g.origW[k]) > 1e-6);
+    else { const z = st.kerbs[g.p.idx]; moved = z.pts.length !== g.origPts.length || z.pts.some((q, k) => dist(q, g.origPts[k]) > 1e-6); }
+    if (!moved) { st.undo.pop(); st.redo = g.keepRedo; } else changed();   // 動かさなければ無かったことに
   }
 
   // 押して離した（動かさずに）
@@ -323,7 +564,7 @@ const OutlineEditor = (() => {
     const tol = tolM(geo), t = st.tool;
     let done = false;
     if (t === 'smooth' || t === 'straight' || t === 'erase' || t === 'zebraAdd') {
-      const kinds = t === 'zebraAdd' ? ['line'] : ['line', 'kerb'];
+      const kinds = t === 'erase' ? ['line', 'kerb'] : ['line'];
       const p = pickPath(x, y, tol, kinds);
       if (!p) { st.pend = null; return; }
       if (!st.pend) { st.pend = p; return; }
@@ -359,11 +600,11 @@ const OutlineEditor = (() => {
   function hoverAt(x, y, geo) {
     if (!st) return null;
     const tol = tolM(geo), t = st.tool;
-    if (t === 'move') st.hover = pickVertex(x, y, tol, ['line', 'kerb']);
+    if (t === 'move') st.hover = pickGrab(x, y, tol);
     else if (t === 'join') st.hover = pickEnd(x, y, tol);
     else if (t === 'zebraDel') st.hover = pickPath(x, y, tol, ['kerb']);
     else if (t === 'board') st.hover = null;
-    else st.hover = pickPath(x, y, tol, t === 'zebraAdd' ? ['line'] : ['line', 'kerb']);
+    else st.hover = pickPath(x, y, tol, t === 'erase' ? ['line', 'kerb'] : ['line']);
     return st.hover ? (t === 'move' ? 'grab' : 'pointer') : t === 'board' ? 'copy' : null;
   }
 
@@ -371,23 +612,23 @@ const OutlineEditor = (() => {
   function overlay(g, P, k, dark) {
     if (!st) return;
     const dot = (pt, r, fill, stroke) => { const [px, py] = P(pt[0], pt[1]); g.beginPath(); g.arc(px, py, r, 0, 2 * Math.PI); g.fillStyle = fill; g.fill(); if (stroke) { g.strokeStyle = stroke; g.lineWidth = 1.5; g.stroke(); } };
+    const box = (pt, r, fill, stroke) => { const [px, py] = P(pt[0], pt[1]); g.fillStyle = fill; g.strokeStyle = stroke; g.lineWidth = 1.5; g.fillRect(px - r, py - r, 2 * r, 2 * r); g.strokeRect(px - r, py - r, 2 * r, 2 * r); };
     g.save();
     if (k * STEP_M >= 6) {          // 寄ったときだけ点を出す
       const c = dark ? 'rgba(255, 255, 255, 0.8)' : 'rgba(31, 41, 55, 0.7)';
-      for (const it of st.lines.concat(st.kerbs)) for (const pt of it.pts) dot(pt, 1.6, c);
+      for (const it of st.lines) for (const pt of it.pts) dot(pt, 1.6, c);
+      if (st.tool === 'move') for (const z of st.kerbs) for (const pt of outerOf(z)) dot(pt, 1.6, '#dc2626');   // ゼブラの幅をつかむ所
     }
     for (const l of st.lines) if (!l.closed && l.pts.length) {   // 開いた線の端（つなぐ所）
       for (const pt of [l.pts[0], l.pts[l.pts.length - 1]]) dot(pt, 4, '#f59e0b', dark ? '#111827' : '#ffffff');
     }
-    const H = st.hover;
-    if (H) {
-      const it = itemOf(H);
-      if (it && it.pts[H.i]) dot(it.pts[H.i], 6, 'rgba(59, 130, 246, 0.35)', '#3b82f6');
+    if (st.tool === 'move' && k * STEP_M >= 3) {                 // ゼブラの両端（伸び縮みさせる所）
+      for (const z of st.kerbs) for (const pt of [z.pts[0], z.pts[z.pts.length - 1]]) box(pt, 3.5, '#dc2626', dark ? '#111827' : '#ffffff');
     }
-    if (st.pend) {
-      const it = itemOf(st.pend);
-      if (it && it.pts[st.pend.i]) dot(it.pts[st.pend.i], 6, '#ef4444', '#ffffff');
-    }
+    const H = st.hover && posOf(st.hover);
+    if (H) dot(H, 6, 'rgba(59, 130, 246, 0.35)', '#3b82f6');
+    const D = st.pend && posOf(st.pend);
+    if (D) dot(D, 6, '#ef4444', '#ffffff');
     g.restore();
   }
 

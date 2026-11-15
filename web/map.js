@@ -221,7 +221,7 @@ const CourseMap = (() => {
   // コース図：道路の縁だけを薄く（周の線がコース幅のどこを通ったかを読むための下地）
   const ROAD_MIN_PX = 9;           // コース図の道の帯は、引いて見てもこの太さ（画素）より細くしない
   const ZEBRA_MIN_PX = 4;          // ゼブラの帯も、この太さより細くしない
-  // 描く中身（m）：{lines: [{pts: [[x, y]], closed}], kerbs: [{w, pts}], boards: [{x, y, text}]}
+  // 描く中身（m）：{lines: [{pts: [[x, y]], closed}], kerbs: [{pts, ws, side} か前の形 {w, pts}], boards: [{x, y, text}]}
   function outlineView() {
     if (editor && editor.active()) return editor.view();
     if (!outline || !outline.lines) return null;
@@ -230,7 +230,8 @@ const CourseMap = (() => {
     const xy = (pts) => pts.map((q) => toXY(q[0], q[1]));
     outlineXY = { src: outline,
                   lines: outline.lines.map((ln) => ({ pts: xy(ln), closed: false })),
-                  kerbs: (outline.kerbs || []).filter((z) => z && z.pts).map((z) => ({ w: z.w || 1, pts: xy(z.pts) })),
+                  kerbs: (outline.kerbs || []).filter((z) => z && z.pts).map((z) => (Array.isArray(z.ws)
+                    ? { pts: xy(z.pts), ws: z.ws, side: z.side < 0 ? -1 : 1 } : { w: z.w || 1, pts: xy(z.pts) })),
                   boards: (outline.boards || []).map((bd) => { const [x, y] = toXY(bd.lat, bd.lon); return { x, y, text: bd.text }; }) };
     outlineKey = key;
     return outlineXY;
@@ -257,23 +258,78 @@ const CourseMap = (() => {
     g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.9)' : fat ? (dark ? '#4b5563' : '#d4d9e0') : (dark ? '#6b7280' : '#a3abb6');
     g.lineWidth = photo ? 1.5 : fat ? ROAD_MIN_PX - roadPx + 2 : 2;
     for (const ln of o.lines) { path(ln); g.stroke(); }
-    // ゼブラ：縁に沿った決まった幅の帯を、走る向きに1 mおきの赤白で（写真では縞を読み切れないので、ある区間だけを描く）
+    // ゼブラ：縁に沿った帯（幅は点ごと、端は細る）を、走る向きに1 mおきの赤白で（写真では縞を読み切れないので、ある区間だけを描く）
     if (o.kerbs && o.kerbs.length) {
       const k = scale(w, h);
-      const dash = Math.max(3, 1.0 * k);
       const white = photo ? 'rgba(255, 255, 255, 0.9)' : dark ? 'rgba(229, 231, 235, 0.5)' : 'rgba(255, 255, 255, 0.95)';
       const red = photo ? 'rgba(239, 68, 68, 0.95)' : dark ? 'rgba(248, 113, 113, 0.85)' : 'rgba(220, 38, 38, 0.7)';
+      const rim = !dark && !photo ? 'rgba(156, 163, 175, 0.6)' : null;
       g.lineCap = 'butt';
       for (const z of o.kerbs) {
         if (!z || !z.pts || z.pts.length < 2) continue;
-        const bw = Math.max(ZEBRA_MIN_PX, (z.w || 1) * k);
-        if (!dark && !photo) { path(z); g.setLineDash([]); g.strokeStyle = 'rgba(156, 163, 175, 0.6)'; g.lineWidth = bw + 1.5; g.stroke(); }
-        path(z); g.setLineDash([]); g.strokeStyle = white; g.lineWidth = bw; g.stroke();
-        path(z); g.setLineDash([dash, dash]); g.strokeStyle = red; g.stroke();
+        drawKerb(g, kerbBand(z), k, white, red, rim, w, h);
       }
       g.setLineDash([]);
     }
     g.restore();
+  }
+
+  // ゼブラの帯の両側の端（m）：{a 内側, b 外側, wmax}。前の形 {w, pts} は帯の真ん中から両側へ w/2
+  function kerbBand(z) {
+    const n = z.pts.length, a = [], b = [];
+    let wmax = 0;
+    for (let i = 0; i < n; i++) {
+      const p = z.pts[i], q0 = z.pts[Math.max(0, i - 1)], q1 = z.pts[Math.min(n - 1, i + 1)];
+      const L = Math.hypot(q1[0] - q0[0], q1[1] - q0[1]) || 1, nx = -(q1[1] - q0[1]) / L, ny = (q1[0] - q0[0]) / L;
+      if (z.ws) {
+        const s = (z.side < 0 ? -1 : 1) * (z.ws[i] || 0);
+        wmax = Math.max(wmax, Math.abs(s));
+        a.push(p); b.push([p[0] + nx * s, p[1] + ny * s]);
+      } else {
+        const hw = (z.w || 1) / 2;
+        wmax = Math.max(wmax, 2 * hw);
+        a.push([p[0] - nx * hw, p[1] - ny * hw]); b.push([p[0] + nx * hw, p[1] + ny * hw]);
+      }
+    }
+    return { a, b, wmax };
+  }
+
+  // 帯を白で塗り、内側の端に沿った距離で1 mおきに赤を重ねる。引いて見て帯が細いときは、真ん中の線を決まった太さの破線で
+  function drawKerb(g, band, k, white, red, rim, w, h) {
+    const { a, b } = band, n = a.length;
+    if (band.wmax * k < ZEBRA_MIN_PX) {
+      const mid = a.map((p, i) => [(p[0] + b[i][0]) / 2, (p[1] + b[i][1]) / 2]);
+      const line = () => { g.beginPath(); mid.forEach((q, i) => { const [px, py] = P(q[0], q[1], w, h); if (i) g.lineTo(px, py); else g.moveTo(px, py); }); };
+      const dash = Math.max(3, 1.0 * k);
+      if (rim) { line(); g.setLineDash([]); g.strokeStyle = rim; g.lineWidth = ZEBRA_MIN_PX + 1.5; g.stroke(); }
+      line(); g.setLineDash([]); g.strokeStyle = white; g.lineWidth = ZEBRA_MIN_PX; g.stroke();
+      line(); g.setLineDash([dash, dash]); g.strokeStyle = red; g.stroke();
+      return;
+    }
+    const poly = (pts) => { g.beginPath(); pts.forEach((q, i) => { const [px, py] = P(q[0], q[1], w, h); if (i) g.lineTo(px, py); else g.moveTo(px, py); }); g.closePath(); };
+    g.setLineDash([]);
+    poly(a.concat(b.slice().reverse()));
+    g.fillStyle = white; g.fill();
+    if (rim) { g.strokeStyle = rim; g.lineWidth = 1; g.stroke(); }
+    // 内側の端に沿った距離 S。距離 s の所は、その線分の内側・外側の端を同じ割合で
+    const S = [0];
+    for (let i = 1; i < n; i++) S.push(S[i - 1] + Math.hypot(a[i][0] - a[i - 1][0], a[i][1] - a[i - 1][1]));
+    const L = S[n - 1], step = Math.max(1, 3 / k);       // 縞は1 m（引いて見て3画素より細くなるときは太くする）
+    let j = 0;
+    const at = (arr, s) => {
+      while (j > 0 && S[j] > s) j--;
+      while (j < n - 2 && S[j + 1] < s) j++;
+      const d = S[j + 1] - S[j], t = d > 0 ? Math.max(0, Math.min(1, (s - S[j]) / d)) : 0;
+      return [arr[j][0] + (arr[j + 1][0] - arr[j][0]) * t, arr[j][1] + (arr[j + 1][1] - arr[j][1]) * t];
+    };
+    g.fillStyle = red;
+    for (let s0 = step; s0 < L; s0 += 2 * step) {
+      const s1 = Math.min(L, s0 + step), inA = [at(a, s0)], inB = [at(b, s0)];
+      for (let i = 0; i < n; i++) if (S[i] > s0 && S[i] < s1) { inA.push(a[i]); inB.push(b[i]); }
+      inA.push(at(a, s1)); inB.push(at(b, s1));
+      poly(inA.concat(inB.reverse()));
+      g.fill();
+    }
   }
 
   // 距離の看板（コーナーの手前の「100」など）：白い板に黒い字。大きさは倍率によらず同じ

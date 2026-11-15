@@ -300,6 +300,10 @@ class OutlineTest(unittest.TestCase):
             {'lines': [[[LAT0, float('nan')], [LAT0, LON0]]]},
             {'lines': [[[95, LON0], [LAT0, LON0]]]},
             {'lines': [ok], 'kerbs': [{'w': 9, 'pts': ok}]},
+            {'lines': [ok], 'kerbs': [{'pts': ok, 'ws': [1], 'side': 1}]},             # 幅の数が点と合わない
+            {'lines': [ok], 'kerbs': [{'pts': ok, 'ws': [1, 6], 'side': 1}]},          # 幅が広すぎる
+            {'lines': [ok], 'kerbs': [{'pts': ok, 'ws': [0, 0], 'side': 1}]},          # 幅が全部 0
+            {'lines': [ok], 'kerbs': [{'pts': ok, 'ws': [1, 1], 'side': 0}]},          # 向きが無い
             {'lines': [ok], 'boards': [{'lat': LAT0, 'lon': LON0, 'text': 'x' * 13}]},
             {'lines': [ok], 'boards': [{'lat': LAT0, 'lon': LON0, 'text': '  '}]},
             {'lines': [ok] * (outline.EDIT_MAX_LINES + 1)},
@@ -308,6 +312,9 @@ class OutlineTest(unittest.TestCase):
             with self.assertRaises(outline.OutlineError, msg=str(d)[:60]):
                 outline.check_edit(d)
         self.assertEqual(outline.check_edit({'lines': [ok]})['kerbs'], [])
+        # 縁にくっつく形（点ごとの幅・端は 0）と前の形の両方が通る
+        k = outline.check_edit({'lines': [ok], 'kerbs': [{'pts': ok, 'ws': [0, 1.234], 'side': -1}, {'w': 1, 'pts': ok}]})['kerbs']
+        self.assertEqual(k, [{'pts': ok, 'ws': [0.0, 1.23], 'side': -1}, {'w': 1.0, 'pts': ok}])
 
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)

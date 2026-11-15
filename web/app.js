@@ -722,6 +722,7 @@ function startOutlineEdit() {
   OutlineEditor.load(o, CourseMap.toXY, {
     radius: () => { const v = +$('oeradius').value; return isFinite(v) ? Math.min(60, Math.max(0, v)) : 10; },
     zebraW: () => { const v = +$('oezebraw').value; return isFinite(v) && v >= 0.2 && v <= 5 ? v : 1; },
+    zebraTaper: () => { const v = +$('oezebrataper').value; return isFinite(v) ? Math.min(20, Math.max(0, v)) : 2; },
     boardText: () => $('oeboard').value.trim().slice(0, 12),
     onChange: renderOutlineControls,
   });
