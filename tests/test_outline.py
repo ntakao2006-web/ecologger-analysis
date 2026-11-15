@@ -254,6 +254,25 @@ class OutlineTest(unittest.TestCase):
         self.assertEqual(len(inner), 1)
         self.assertLess(np.max(np.abs(inner[0] - R_IN)), 0.3)
 
+    def test_edge_moves_to_the_inner_side_of_the_kerb(self):
+        # 地図の外の縁が縁石の外の端（R_OUT+1.2 m）に引かれている。ゼブラの所は、縁を縁石の内側の端（R_OUT）へ寄せ、帯はその外
+        self.edge_lines = [circle(R_IN), circle(R_OUT + 1.2)]
+        o = outline.Outlines(self.tmp.name, Photos(kerb=True), fetch=self.fetch)
+        la, lo = circle(R_CAR, 0, 2 * math.pi, 800)
+        out = o.build(la, lo)
+        outer = [np.asarray(x) for x in out['lines'] if np.median(self.radii({'lines': [x]})[0]) > R_CAR]
+        self.assertEqual(len(outer), 1)
+        p = outer[0]
+        r = np.hypot((p[:, 1] - LON0) * KX, (p[:, 0] - LAT0) * outline.M_PER_DEG)
+        a = np.arctan2((p[:, 0] - LAT0) * outline.M_PER_DEG, (p[:, 1] - LON0) * KX)
+        mid = (a > 0.35) & (a < 0.65)                                      # ゼブラの真ん中あたり
+        far = (a < -0.5) | (a > 1.5)                                       # ゼブラから離れた所
+        self.assertLess(np.max(np.abs(r[mid] - R_OUT)), 0.4)
+        self.assertLess(np.max(np.abs(r[far] - (R_OUT + 1.2))), 0.3)
+        z = np.concatenate([np.asarray(k['pts']) for k in out['kerbs']])
+        rz = np.hypot((z[:, 1] - LON0) * KX, (z[:, 0] - LAT0) * outline.M_PER_DEG)
+        self.assertLess(np.median(np.abs(rz - (R_OUT + outline.ZEBRA_W_M / 2))), 0.3)    # 帯は縁の外側に接する
+
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
         with self.assertRaises(outline.OutlineError):

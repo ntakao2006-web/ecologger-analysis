@@ -32,7 +32,7 @@ import numpy as np
 
 from . import __version__, mvt
 
-VERSION = 4                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す。4：こぶ取り・ゼブラを帯に
+VERSION = 5                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す。4：こぶ取り・ゼブラを帯に。5：縁をゼブラの内側の端へ
 BV_URL = 'https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'
 BV_Z = 16                       # 道路縁（縮尺 1/2500 の元）が入っている細かさ
 PHOTO_Z = 18
@@ -65,6 +65,8 @@ BUMP_GROW = 1                           # こぶ取り：裾のさらに前後�
 ZEBRA_GAP = 5                           # ゼブラの区間：抜けがこの横断面の数（×2 m）までならつなぐ
 ZEBRA_MIN = 6                           # ゼブラの区間：この横断面の数（×2 m）より短いものは捨てる（ピット出口の矢羽根など）
 ZEBRA_W_M = 1.0                         # ゼブラの帯の幅（m）。写真では幅を読み切れないので決まった幅で描く
+ZEBRA_RAMP = 4                          # 縁をゼブラへ寄せるとき、区間の前後この横断面の数でなだらかに戻す
+ZEBRA_SHIFT_MAX_M = 3.5                 # 縁をゼブラへ寄せるのはこの距離まで（それより離れたゼブラは何かの見違い）
 KERB_IN_M, KERB_OUT_M = 3.0, 4.0        # ゼブラ（赤白の縁石）を、縁から内へ・外へこれだけの幅で探す
 KERB_ALONG_M = 2.0                      # 走る向きに前後これだけの幅で見る（赤と白が1 mほどで交互に並ぶ）
 KERB_ALONG_STEP_M = 0.5
@@ -408,6 +410,31 @@ class Outlines:
             out.append((run, off))
         return out
 
+    @staticmethod
+    def edge_at_kerbs(d, spans):
+        """ゼブラのある所は、縁をゼブラの内側の端（舗装と縁石の境目＝コースの縁）へ寄せる。
+        地図の道路縁は縁石の外の端に引かれていることが多く（そのままだとゼブラが道の帯の中に描かれる）、
+        写真から取った縁は色の違う舗装で手前に止まることがある（ゼブラが縁から浮く）。
+        区間の前後 ZEBRA_RAMP 個の横断面で、寄せる量をなだらかに0へ戻す"""
+        n = len(d)
+        out = d.copy()
+        for side in (0, 1):
+            shift = np.zeros(n)
+            wsum = np.zeros(n)
+            for run, off in spans[side]:
+                delta = off - ZEBRA_W_M / 2                 # 縁から、ゼブラの内側の端まで
+                if not np.isfinite(delta) or abs(delta) > ZEBRA_SHIFT_MAX_M:
+                    continue
+                idx = np.r_[np.arange(run[0] - ZEBRA_RAMP, run[0]), run, np.arange(run[-1] + 1, run[-1] + 1 + ZEBRA_RAMP)] % n
+                w = np.r_[np.arange(1, ZEBRA_RAMP + 1) / (ZEBRA_RAMP + 1), np.ones(len(run)),
+                          np.arange(ZEBRA_RAMP, 0, -1) / (ZEBRA_RAMP + 1)]
+                shift[idx] += w * delta
+                wsum[idx] += w
+            m = wsum > 0
+            shift[m] /= np.maximum(wsum[m], 1.0)            # 重なった区間は平均（1より小さい重みはそのまま＝なだらかに）
+            out[:, side] = d[:, side] + shift
+        return out
+
     def kerbs(self, origin, gx, gy, nx, ny, tx, ty, d):
         """縁 d (n, 2) の近くのゼブラ（赤白の縁石）。左右それぞれ (内の距離, 外の距離) の配列 (n, 2, 2)（無ければ NaN）。
         縁に沿って白と赤みが交互に並ぶ所を探す（白線は途切れないので、交互の数で分ける）"""
@@ -659,6 +686,11 @@ class Outlines:
         tx, ty = ny, -nx
         lat0, lon0 = origin
         kx = M_PER_DEG * math.cos(math.radians(lat0))
+        kb = self.kerbs(origin, gx, gy, nx, ny, tx, ty, d)
+        self._pcache = {}
+        spans = [[(r, o) for r, o in self.zebra_spans(kb[:, side], d[:, side])
+                  if abs(o - ZEBRA_W_M / 2) <= ZEBRA_SHIFT_MAX_M] for side in (0, 1)]     # 縁から離れすぎたものは見違い
+        d = self.edge_at_kerbs(d, spans)
         lines = []
         for side, sg in ((0, 1.0), (1, -1.0)):
             ex, ey = gx + sg * nx * d[:, side], gy + sg * ny * d[:, side]
@@ -688,12 +720,10 @@ class Outlines:
         share = {'gsi': round(float((src == 1).sum()) / n, 3), 'photo': round(float((src == 2).sum()) / n, 3),
                  'filled': round(float((src == 3).sum()) / n, 3), 'none': round(float((src == 0).sum()) / n, 3)}
         width = d[:, 0] + d[:, 1]
-        kb = self.kerbs(origin, gx, gy, nx, ny, tx, ty, d)
-        self._pcache = {}
         kerbs = []
         for side, sg in ((0, 1.0), (1, -1.0)):
-            for run, off in self.zebra_spans(kb[:, side], d[:, side]):
-                c = d[run, side] + off                      # 縁からの決まった距離に帯の真ん中
+            for run, _off in spans[side]:
+                c = d[run, side] + ZEBRA_W_M / 2            # 縁（＝ゼブラの内側の端）のすぐ外に帯の真ん中
                 xs, ys = gx[run] + sg * nx[run] * c, gy[run] + sg * ny[run] * c
                 kerbs.append({'w': ZEBRA_W_M,
                               'pts': [[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(xs, ys)]})
