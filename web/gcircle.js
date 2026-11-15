@@ -34,6 +34,7 @@ const GCircle = (() => {
   // カーソル（横軸の値）を、その周の頭からの秒に直す
   function lapTimeAt(lap, x) {
     if (x === null || x === undefined) return null;
+    if (typeof Sync !== 'undefined') return Sync.lapTime(lap, x, 'axis');
     if (opts.x() === 'dist') return lap.s ? valueAt(lap.s, lap.t, x) : null;
     return x;
   }

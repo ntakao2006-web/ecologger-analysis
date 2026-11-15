@@ -6,6 +6,7 @@
 const VideoPane = (() => {
   const DRIFT_S = 0.3, FPS = 15;
   let opts = null, laps = [], slots = [], playing = false, raf = 0, lastTick = 0, lastX = null;
+  let until = null;           // ここ（横軸の値）まで来たら止める（区間を再生するとき。SP-10-16）
 
   // 増える一方の xa で x のときの ya（範囲の外は null）
   function interp(xa, ya, x) {
@@ -27,13 +28,16 @@ const VideoPane = (() => {
     return [a, b];
   }
 
-  // 横軸の値 x → その周の頭からの秒。距離なら、その周の走った線で同じ地点を通った時刻
+  // 横軸の値 x → その周の頭からの秒。距離なら、その周の走った線で同じ地点を通った時刻。
+  // 時間の横軸で区間の頭にそろえているときは、区間の頭からの経過時間が同じ時刻（sync.js。SP-10-16）
   function lapTimeAt(lap, x) {
     if (x === null || x === undefined) return null;
+    if (typeof Sync !== 'undefined') return Sync.lapTime(lap, x, 'axis');
     if (opts.x() !== 'dist') return x >= 0 && x <= lap.time_s ? x : null;
     return lap._s2t ? interp(lap._s2t[0], lap._s2t[1], x) : null;
   }
   function xAt(lap, t) {
+    if (typeof Sync !== 'undefined') return Sync.xOf(lap, t);
     if (opts.x() !== 'dist') return t;
     return lap._t2s ? interp(lap._t2s[0], lap._t2s[1], t) : null;
   }
@@ -153,6 +157,7 @@ const VideoPane = (() => {
       stop(); return;
     }
     const x = xAt(lapA, t);
+    if (until !== null && x !== null && x >= until) { lastX = until; opts.onTime(until); stop(); return; }
     a.pos.textContent = `周の頭から ${t.toFixed(2)}秒`;
     if (x !== null && now - lastTick >= 1000 / FPS) {
       lastTick = now; lastX = x;
@@ -206,6 +211,7 @@ const VideoPane = (() => {
 
   function stop() {
     playing = false;
+    until = null;
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
     for (const s of slots) { s.video.pause(); s.video.playbackRate = 1; }
@@ -297,6 +303,17 @@ const VideoPane = (() => {
       });
     },
     toggle() { if (playing) stop(); else play(); },
+    // 横軸の値 x から再生し、end まで来たら止める（区間を再生する）。上の動画の周に x の所の動画が無ければ false
+    playRange(x, end) {
+      if (playing) stop();
+      const lapA = lapOf(slots[0]);
+      if (!lapA || segAt(lapA, lapTimeAt(lapA, x)) === null) return false;
+      lastX = x;
+      play();
+      until = end;
+      return playing;
+    },
+    stop() { if (playing) stop(); },
     setRate(r) { if (playing) slots[0].video.playbackRate = r; },
     playing() { return playing; },
     clear() { if (playing) stop(); laps = []; lastX = null; fillSelects(); refresh(); },

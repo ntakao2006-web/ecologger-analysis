@@ -15,7 +15,13 @@ const Chart = (() => {
   function css(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
 
   // 周の横軸（距離か時間）の配列
-  function xs(lap) { return opts.x === 'dist' ? lap.s : lap.t; }
+  // 時間の横軸で区間の頭にそろえているときは、区間ごとにずらした時刻（opts.shift。SP-10-16）
+  function xs(lap) {
+    if (opts.x === 'dist') return lap.s;
+    if (!opts.shift || !lap.t) return lap.t;
+    if (!lap._tx || lap._txFor !== opts.shift) { lap._tx = lap.t.map((t) => (t === null ? null : opts.shift(lap, t))); lap._txFor = opts.shift; }
+    return lap._tx;
+  }
 
   function fullRange() {
     let hi = 0;
@@ -169,10 +175,12 @@ const Chart = (() => {
       if (!s || !s.x) continue;
       g.strokeStyle = opts.color(lap.key); g.lineWidth = lap.ref ? 2 : 1.5; g.lineJoin = 'round';
       g.beginPath();
-      let pen = false, lastY = null;
+      let pen = false, lastY = null, lastXv = -Infinity;
       for (let k = 0; k < s.x.length; k++) {
         const x = s.x[k], y = s.y[k];
         if (x === null || y === null) { pen = false; continue; }
+        if (x < lastXv) pen = false;            // 区間の頭でずらして時刻が戻った所はつながない
+        lastXv = x;
         const X = px(x, w), Y = py(y);
         if (X < PAD_L - 50 || X > w + 50) { pen = false; lastY = Y; continue; }
         if (!pen) { g.moveTo(X, Y); pen = true; }
@@ -221,7 +229,11 @@ const Chart = (() => {
     if (cursorX === null) return;
     for (const lap of data.laps) {
       const s = series(p, lap);
-      const v = s ? valueAt(s.x, s.y, cursorX) : null;
+      let v;
+      if (p.kind === 'chan' && opts.shift && opts.lapTime && s) {    // ずらして描いているときは、その周の時刻で読む
+        const t = opts.lapTime(lap, cursorX);
+        v = t === null ? null : valueAt(lap.t, s.y, t);
+      } else v = s ? valueAt(s.x, s.y, cursorX) : null;
       const item = document.createElement('span');
       item.className = 'pval';
       const sw = document.createElement('i');
@@ -329,7 +341,8 @@ const Chart = (() => {
   }
 
   return {
-    // data：/api/overlay の返事。o：{x: 'dist'|'time', channels: [{name,label,unit,kind}], color(key), onCursor(x, 'hover'|'leave'|'pin'), offset 線のずれの段を出すか}
+    // data：/api/overlay の返事。o：{x: 'dist'|'time', channels: [{name,label,unit,kind}], color(key), onCursor(x, 'hover'|'leave'|'pin'), offset 線のずれの段を出すか,
+    //   shift(lap, t) 時間の横軸でずらして描く時刻（無ければ周の頭からの秒のまま）, lapTime(lap, x) カーソルのときのその周の時刻}
     show(el, d, o, keepView) {
       root = el; data = d; opts = o;
       buildPanels(); layout();

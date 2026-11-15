@@ -26,6 +26,18 @@ const $ = (id) => document.getElementById(id);
 // 摩擦円に描く G の出どころ（SP-10-14）：'imu'（ふだん）か 'gnss'（測位から計算）
 state.gsrc = 'imu';
 try { if (localStorage.getItem('gsrc') === 'gnss') state.gsrc = 'gnss'; } catch (e) { /* 覚えていなくてよい */ }
+// 再生とそろえ方（SP-10-16）：align は時間の横軸・「同じ時間」の置き方でそろえる所（'lap' 周の頭・'section' 区間の頭）、
+// place は地図の点の置き方（'axis' 横軸に合わせる・'space' 同じ場所・'time' 同じ時間）
+state.align = 'lap'; state.place = 'axis';
+try {
+  if (localStorage.getItem('align') === 'section') state.align = 'section';
+  const pl = localStorage.getItem('place'); if (pl === 'space' || pl === 'time') state.place = pl;
+} catch (e) { /* 覚えていなくてよい */ }
+// 区間の頭の位置（基準の周の距離 m）
+function splitHeads() {
+  const L = mapLines();
+  return (L && L.splits || []).map((ln) => { const r = CourseMap.refAt(ln.lat, ln.lon); return r ? r.s : null; });
+}
 // カーソルを、コース図と摩擦円の両方へ
 function setCursors(x) { CourseMap.setCursor(x); GCircle.setCursor(x); }
 
@@ -358,7 +370,7 @@ function renderSections() {
         brakeCell.onclick = (e) => { e.stopPropagation(); brakeMoments(i, laps, k); };
       }
       const tr = el('tr', { class: 'secrow' + (k === 0 ? ' secfirst' : ''), title: '押すと、地図・グラフ・動画をこの区間へ動かします' },
-        el('td', { class: 'sec' }, k === 0 ? String(i + 1) + ((s.split_names || [])[i] ? ' ' + s.split_names[i] : '') : ''),
+        el('td', { class: 'sec' }, ...(k === 0 ? [playBtn(i, n), String(i + 1) + ((s.split_names || [])[i] ? ' ' + s.split_names[i] : '')] : [''])),
         el('td', { class: 'num', title: `${r.s.title} ${r.lap}周${k === 0 ? '（基準）' : ''}` },
            el('span', { class: 'lapdot', style: `background:${colorFor(r.key)}` }), String(r.lap)),
         el('td', { class: cls }, has(t) ? t.toFixed(3) : '—'),
@@ -399,6 +411,35 @@ function goSection(i, n) {
   Chart.zoom(r[0], r[1]);
   CourseMap.fitRange(r[0], r[1]);
   Chart.pin(r[0]); setCursors(r[0]); VideoPane.cursor(r[0], 'pin');
+}
+
+// ---------------------------------------------------------------- 区間を再生する（SP-10-16）
+// 区間の頭から動画とカーソルを動かし、区間の終わりで止める。動画が無ければ、カーソル（地図の点・グラフ）だけを動かす
+function playBtn(i, n) {
+  const b = el('button', { type: 'button', class: 'secplay', title: 'この区間を頭から再生し、終わりで止めます（動画が無ければ地図の点とグラフのカーソルだけを動かします。速さは動画の枠の倍率）' }, '▶');
+  b.onclick = (e) => { e.stopPropagation(); playSection(i, n); };
+  return b;
+}
+function stopCursorPlay() {
+  if (state.cursorPlay) { cancelAnimationFrame(state.cursorPlay.raf); state.cursorPlay = null; }
+}
+function playSection(i, n) {
+  stopCursorPlay();
+  const r = sectionRange(i, n);
+  if (!r) { status('この区間の所が分かりません（基準の周の測位が足りない）', 'ng'); return; }
+  goSection(i, n);
+  if (VideoPane.playRange(r[0], r[1])) { status(`区間${i + 1}を動画と一緒に再生しています（区間の終わりで止まります）`, 'ok'); return; }
+  const t0 = Sync.refTime(r[0]), t1 = Sync.refTime(r[1]);
+  if (t0 === null || t1 === null) { status('この区間の時刻が分かりません', 'ng'); return; }
+  const rate = +$('vrate').value || 1, start = performance.now();
+  const step = (now) => {
+    const tr = Math.min(t1, t0 + (now - start) / 1000 * rate), x = Sync.xOfRef(tr);
+    if (x !== null) { Chart.pin(x); setCursors(x); }
+    if (tr >= t1) { state.cursorPlay = null; status(`区間${i + 1}の終わりで止めました`, 'ok'); return; }
+    state.cursorPlay.raf = requestAnimationFrame(step);
+  };
+  state.cursorPlay = { raf: requestAnimationFrame(step) };
+  status(`区間${i + 1}を再生しています（動画が無いので、地図の点とグラフのカーソルだけ。グラフか地図を押すと止まります）`, 'ok');
 }
 
 // ブレーキの数を押した：基準の周と、押した周（基準の周の行なら2番目の周）の動画を、それぞれのブレーキの踏み始めの瞬間で止めて並べる
@@ -564,6 +605,9 @@ function onSplit(i, ln) {
 // グラフに区間の線を縦に描く（基準の周の上の位置）
 function updateMarks() {
   if (!state.overlay) { Chart.setMarks([]); return; }
+  Sync.setData(state.overlay);            // 区間の線が変わったら、そろえる所も変わる
+  for (const l of state.overlay.laps) l._tx = null;
+  $('alignsel').disabled = !splitHeads().length;
   const key = state.x === 'dist' ? 's' : 't';
   const L = mapLines();
   const out = (L && L.splits || []).map((line, i) => {
@@ -786,9 +830,12 @@ async function renderPicked() {
   state.overlay = j; state.x = x;
   const refKey = j.laps[j.ref] && j.laps[j.ref].key;
   state.refSession = state.sessions.find((s) => refKey && refKey.startsWith(s.id + ':')) || null;
+  CourseMap.show(j, true);              // 先に地図へ渡す（区間の頭の位置を基準の周の線から出すため）
+  Sync.setData(j);
   Chart.show($('plots'), j, { x, channels: state.channels.filter((n) => meta.has(n)).map((n) => meta.get(n)), color: colorFor, offset: $('offline').checked,
-                              onCursor: (v, kind) => { setCursors(v); VideoPane.cursor(v, kind); } }, true);
-  CourseMap.show(j, true);
+                              shift: x === 'time' && state.align === 'section' ? (lap, t) => Sync.xOf(lap, t) : null,
+                              lapTime: (lap, v) => Sync.lapTime(lap, v, 'axis'),
+                              onCursor: (v, kind) => { if (kind === 'pin') stopCursorPlay(); setCursors(v); VideoPane.cursor(v, kind); } }, true);
   GCircle.show(j);
   $('gEmpty').hidden = j.laps.some((l) => l.g);
   setCursors(Chart.cursor());
@@ -1335,6 +1382,19 @@ for (const r of document.querySelectorAll('input[name=xaxis]')) r.onchange = () 
 $('refsel').onchange = (e) => { state.ref = e.target.value; renderPicked(); };
 // 区間の頭で差を0にするか（ふだんは切。選び直しは覚える）
 try { $('zerosec').checked = localStorage.getItem('zerosec') === '1'; } catch (e) { $('zerosec').checked = false; }
+// そろえる所・点の置き方（SP-10-16。選び直しは覚える）
+$('alignsel').value = state.align;
+$('alignsel').onchange = (e) => {
+  state.align = e.target.value === 'section' ? 'section' : 'lap';
+  try { localStorage.setItem('align', state.align); } catch (er) { /* 覚えなくてよい */ }
+  renderPicked();
+};
+$('placesel').value = state.place;
+$('placesel').onchange = (e) => {
+  state.place = ['space', 'time'].includes(e.target.value) ? e.target.value : 'axis';
+  try { localStorage.setItem('place', state.place); } catch (er) { /* 覚えなくてよい */ }
+  CourseMap.redraw();
+};
 // 線のずれの段（SP-10-15。ふだんは切。選び直しは覚える）
 try { $('offline').checked = localStorage.getItem('offline') === '1'; } catch (e) { $('offline').checked = false; }
 $('offline').onchange = () => { try { localStorage.setItem('offline', $('offline').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } renderPicked(); };
@@ -1342,11 +1402,12 @@ $('zerosec').onchange = () => { try { localStorage.setItem('zerosec', $('zerosec
 new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 CourseMap.init($('mapcv'), {
   x: () => state.x, color: colorFor, lines: mapLines, editing: () => !!state.draft,
-  onPick: (v) => { Chart.pin(v); setCursors(v); VideoPane.cursor(v, 'pin'); },
+  onPick: (v) => { stopCursorPlay(); Chart.pin(v); setCursors(v); VideoPane.cursor(v, 'pin'); },
   onPlace: placeLine, photo: () => $('photo').checked, paint: paintForMap,
   onFollow: (on) => { $('follow').checked = on; saveFollow(); },
   onTool: (t) => setOutlineTool(t),
   splitEditing: () => !!state.secdraft, onSplitMove, onSplit,
+  lapTime: (lap, x) => Sync.lapTime(lap, x, state.place),
 });
 // 車を追うか（ふだんは追わない。図を手で引くと外れる。選び直しは覚える）
 function saveFollow() { try { localStorage.setItem('follow', $('follow').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } }
@@ -1375,6 +1436,7 @@ $('photo').onchange = () => { try { localStorage.setItem('photo', $('photo').che
 try { $('outline').checked = localStorage.getItem('outline') !== '0'; } catch (e) { $('outline').checked = true; }
 $('outline').onchange = () => { try { localStorage.setItem('outline', $('outline').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } loadOutline(); };
 new ResizeObserver(() => CourseMap.redraw()).observe($('mapcv'));
+Sync.init({ x: () => state.x, align: () => state.align, heads: splitHeads });
 VideoPane.init($('vbox'), {
   x: () => state.x, color: colorFor, rate: () => +$('vrate').value,
   onTime: (x) => { Chart.pin(x); setCursors(x); },

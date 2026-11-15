@@ -70,9 +70,13 @@ const CourseMap = (() => {
   // 周 lap の車の位置（m）。カーソルが無い・周の外なら null
   function carAt(lap) {
     if (cursor === null || !lap || !lap.track) return null;
-    const p = posAt(lap.track, curKey(), cursor);
+    const t = carTime(lap);
+    const p = t === undefined ? posAt(lap.track, curKey(), cursor) : t === null ? null : posAt(lap.track, 't', t);
     return p && isFinite(p[0]) && isFinite(p[1]) ? p : null;
   }
+  // 周 lap の車を置く時刻（周の頭からの秒。点の置き方「同じ場所・同じ時間」と、そろえる所で決まる。SP-10-16）。
+  // opts.lapTime が無ければ undefined（横軸の値でそのまま置く）
+  function carTime(lap) { return opts.lapTime ? opts.lapTime(lap, cursor) : undefined; }
   // 追っているなら、図の真ん中を基準の周の車へ（直している・線を置いているとき、車を引いているあいだは動かさない）
   function centerOnCar() {
     if (!follow || (drag && (drag.car || drag.split)) || (editor && editor.active()) || opts.editing() || splitEditing()) return;
@@ -613,9 +617,10 @@ const CourseMap = (() => {
     const rows = [];
     for (const lap of data.laps) {
       if (!lap.track || !carAt(lap)) continue;
-      const tr = lap.track, sp = valAt(tr, key, 'sp', cursor), parts = [short(lap) + (lap.ref ? '（基準）' : ''), sp === null ? '— km/h' : `${Math.round(sp)} km/h`];
+      const tr = lap.track, ct = carTime(lap), kk = ct === undefined ? key : 't', xx = ct === undefined ? cursor : ct;
+      const sp = valAt(tr, kk, 'sp', xx), parts = [short(lap) + (lap.ref ? '（基準）' : ''), sp === null ? '— km/h' : `${Math.round(sp)} km/h`];
       if (!lap.ref) {
-        const off = valAt(tr, key, 'off', cursor), dd = valAt(tr, key, 'dd', cursor);
+        const off = valAt(tr, kk, 'off', xx), dd = valAt(tr, kk, 'dd', xx);
         parts.push(off === null ? '—' : Math.abs(off) < 0.05 ? '0.0 m' : `${off > 0 ? '右' : '左'} ${Math.abs(off).toFixed(1)} m`);
         parts.push(dd === null ? '—' : Math.abs(dd) < 0.0005 ? '0.000 秒' : `${dd > 0 ? '+' : '−'}${Math.abs(dd).toFixed(3)} 秒`);
       }
@@ -759,7 +764,8 @@ const CourseMap = (() => {
         const p = carAt(lap);
         if (!p) continue;
         const [px, py] = P(p[0], p[1], w, h);
-        const a = posAt(lap.track, key, cursor + dt) || p, b = posAt(lap.track, key, cursor - dt) || p;
+        const ct = carTime(lap), at = (d) => (ct === undefined ? posAt(lap.track, key, cursor + d * dt) : posAt(lap.track, 't', ct + d * 0.4));
+        const a = at(1) || p, b = at(-1) || p;
         const [ax, ay] = P(a[0], a[1], w, h), [bx, by] = P(b[0], b[1], w, h);
         drawCar(g, px, py, Math.atan2(ay - by, ax - bx), opts.color(lap.key), lap.ref ? 11 : 9, photo || dark);
       }
@@ -1051,7 +1057,8 @@ const CourseMap = (() => {
     // o：{x() 'dist'|'time', color(key), lines() {line, sectors, splits, splitLabels, splitSel, splitEdit, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか,
     //     splitEditing() 区間の線を直しているか, onSplitMove(i, {lat,lon,bearing}) 引いている途中, onSplit(i, 線か null, 横軸の値) 離した（null は押しただけ）,
     //     paint() {mode 'lap'|'value'|'rate'|'delta', ch, chLabel, unit, lo, hi 段の範囲を手で（null は自動）, dotted, acc, marks, markLabel, markUnit,
-    //              curinfo カーソルの所に周ごとの速さ・横のずれ・タイムの差を出すか}
+    //              curinfo カーソルの所に周ごとの速さ・横のずれ・タイムの差を出すか},
+    //     lapTime(lap, x) 周 lap の車を置く時刻（周の頭からの秒。無ければ横軸の値でそのまま置く）
     init(canvas, o) { cv = canvas; opts = o; bind(); },
     show(d, keepView) { const same = data && d && data.origin && d.origin && data.origin[0] === d.origin[0] && data.origin[1] === d.origin[1]; data = d; hover = null; if (!(keepView && same && view)) { fit(); followZoom = follow; } draw(); },
     // いま塗っている段の範囲（自動のときの数を入れ欄の見本に出すため）
