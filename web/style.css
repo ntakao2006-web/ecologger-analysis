@@ -147,6 +147,12 @@ body.resizing video, body.resizing canvas, body.moving video, body.moving canvas
 .map { display: flex; flex-direction: column; }
 .mapcv { flex: 1; min-height: 0; width: 100%; display: block; cursor: pointer; }
 .map.editing .mapcv { cursor: crosshair; }
+/* 摩擦円の枠「G」（SP-10-14） */
+.gpane { display: flex; flex-direction: column; }
+.gcv { flex: 1; min-height: 120px; width: 100%; display: block; }
+.ginfo { flex: none; overflow-x: auto; }
+.gtable td.sec { text-align: left; font-weight: 600; }
+.gpane > .note { flex: none; }
 .mapopts { display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; margin-bottom: 6px; font-size: 12px; }
 .mapopts select { font-size: 12px; padding: 2px 6px; max-width: 200px; }
 .mapopts input[type=number] { width: 88px; font: inherit; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); }

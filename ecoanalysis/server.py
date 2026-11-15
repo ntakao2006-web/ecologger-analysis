@@ -85,7 +85,8 @@ class Store:
                     old = sid                # 書き出し直された走行：同じ番号のまま読み直す
         t = time.perf_counter()
         s = session.load(path, self.cache)
-        it = {'key': key, 'session': s, 'load_s': None, 'stamp': stamp}
+        it = {'key': key, 'session': s, 'load_s': None, 'stamp': stamp,
+              'dyn': dynamics.attach(s)}      # 測位から計算するチャンネル（横G・前後G・旋回半径・摩擦円の使い方。SP-10-14）
         self._cut(it)
         it['load_s'] = round(time.perf_counter() - t, 2)
         with self.lock:
@@ -190,7 +191,7 @@ class Store:
             return {'ok': True, 'app': 'ecologger-analysis', 'version': __version__, 'rev': self.rev,
                     'mode': self.mode, 'mode_note': self.mode_note, 'notice': self.notice}
 
-    def overlay(self, picks, mode, channels, ref=None, paint=None, mark='Speed'):
+    def overlay(self, picks, mode, channels, ref=None, paint=None, mark='Speed', gsrc=None):
         """picks：[{id, lap}]。mode：'app'（コースの線で切った周）か 'logger'。周が見つからなければ KeyError"""
         items = []
         with self.lock:
@@ -209,7 +210,7 @@ class Store:
 
         def calc(s, rows, names):
             return formula.compute(names, s.channels, s.t, rows, compiled)
-        out = overlay.compare(items, channels, ref, calc, paint, mark)
+        out = overlay.compare(items, channels, ref, calc, paint, mark, gsrc)
         for item, lap in zip(items, out['laps']):
             lap['video'] = lap_videos(item['sid'], item['session'], item['lap'])
         return out
@@ -662,12 +663,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/overlay':
             picks, chans, ref = body.get('laps'), body.get('channels') or [], body.get('ref')
             paint, mark = body.get('paint') or None, body.get('mark') or 'Speed'      # コース図の塗り（SP-10-12）
+            gsrc = body.get('gsrc') or None                                           # 摩擦円（SP-10-14）
+            if gsrc not in (None, 'imu', 'gnss'):
+                return self._json({'ok': False, 'error': 'gsrc は imu か gnss'}, 400)
             if not isinstance(picks, list) or not all(isinstance(c, str) for c in chans) or not (ref is None or isinstance(ref, int)) \
                     or not (paint is None or isinstance(paint, str) and len(paint) <= 100) or not (isinstance(mark, str) and len(mark) <= 100):
                 return self._json({'ok': False, 'error': 'laps・channels・ref・paint・mark の形が違う'}, 400)
             try:
                 return self._json({'ok': True, **self.store.overlay(picks[:12], body.get('mode', 'app'), chans[:12], ref,
-                                                                    paint, mark)})
+                                                                    paint, mark, gsrc)})
             except KeyError as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
         if path == '/api/outline/snap':          # なぞった線を縁へ吸い付かせる（SP-10-34）。走行の中身は使わない

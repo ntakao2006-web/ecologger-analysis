@@ -9,6 +9,8 @@ import math
 
 import numpy as np
 
+from . import dynamics
+
 EARTH_M_PER_DEG = 111320.0
 MAX_POINTS = 6000         # 1周に送る点の数の上限（多ければ間引く）
 MAX_TRACK = 3000          # コース図に送る測位の点の数の上限
@@ -27,6 +29,7 @@ EXTREME_SMOOTH_S = 0.5    # 極大・極小を拾う前にならす幅
 EXTREME_SWING = 0.08      # 極大・極小とみなす戻りの大きさ（周の中の 2〜98% の幅に対する割合）
 EDGE_S = 0.5              # 周の頭と終わりのこの秒の中の極大・極小は捨てる（線を越えた所はコーナーではない）
 BRAKE_CHANNELS = ('Brake', 'BrakeOn')   # ブレーキの ON/OFF のチャンネル（あればこちらで踏み始めを拾う）
+G_STEP_S = 0.1           # 摩擦円の点の間隔（SP-10-14）
 
 
 def _xy(lat, lon, origin):
@@ -267,7 +270,46 @@ def _paint_and_marks(row, s_obj, m, a, line, kt, paint, mark, calc):
     row['marks'] = sorted(marks, key=lambda x: x['t'])
 
 
-def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed'):
+def friction_points(s_obj, a, b, prefer):
+    """摩擦円の点（周の頭からの秒 t・横G x・前後G y・旋回半径 r・速さ v を G_STEP_S ごと）と、使った G の出どころ。
+    作れなければ (None, None)"""
+    src = dynamics.g_source(s_obj, prefer)
+    m = (s_obj.t >= a) & (s_obj.t <= b)
+    if src is None or m.sum() < 2:
+        return None, None
+    lat, lg, how = src
+    t = s_obj.t[m]
+    tg = np.arange(t[0], t[-1] + 1e-9, G_STEP_S)
+    rad = s_obj.channels.get(dynamics.RADIUS_NAME)
+    sp = dynamics._speed_rows(s_obj)
+
+    def on(v):
+        if v is None:
+            return [None] * len(tg)
+        v = np.asarray(v, float)[m]
+        out = np.interp(tg, t, v)
+        j = np.clip(np.searchsorted(t, tg), 1, len(t) - 1)
+        out[~(np.isfinite(v[j - 1]) & np.isfinite(v[j]))] = np.nan     # 空欄をまたいで補わない（直線の半径など）
+        return out
+    return {'t': _nums(tg - a, 2), 'x': _nums(on(lat), 3), 'y': _nums(on(lg), 3), 'r': _nums(on(rad), 1),
+            'v': _nums(on(sp), 1)}, how
+
+
+def _envelope(rows):
+    xs, ys, vs = [], [], []
+    for r in rows:
+        g = r.get('g')
+        if g:
+            xs += g['x']; ys += g['y']; vs += g['v']
+    f = lambda a: np.array([np.nan if v is None else v for v in a], float)
+    if not xs:
+        return None
+    v = f(vs)
+    env = dynamics.envelope(f(xs), f(ys), ~(v < dynamics.MOVING_KMH))
+    return None if env is None else _nums(env, 3)
+
+
+def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc=None):
     """items：[{key, label, session, lap}]（lap は {start, end, time_s}）。ref：基準の周の番号（無ければ一番速い周）
     calc：計算チャンネル。calc(session, rows, names) → (値 名前→rows の行の配列, 計算できない理由 名前→文)。
     周の行だけで計算する（積分は周の頭で0から）。
@@ -276,7 +318,9 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed'):
     track: {t, s, x, y, dd, rate, hacc, bad, v?, dec?}, marks: [{k, t, s, x, y, v}]}], grid}
     track の dd は基準の周とのタイムの差、rate はその増え方（秒/m、＋は損）、bad は測位の質が悪い点（1）、
     dec は減速している点（1。前後Gがあるとき）。marks の k は on（ブレーキの踏み始め）・off（離した所）・min・max、
-    v は on/off なら速さ、min/max なら mark の値"""
+    v は on/off なら速さ、min/max なら mark の値。
+    gsrc：摩擦円の G の出どころ（'imu'・'gnss'。None なら摩擦円の点を作らない）。作ると周ごとに g（friction_points）、
+    全体に friction: {src, env（選んだ周の向きごとの合成Gの99%。0°＝右、ENV_STEP_DEG 刻み）, step}"""
     if not items:
         return {'ref': None, 'ref_length_m': None, 'distance': False, 'laps': [], 'grid': [], 'ref_t': [], 'origin': None}
     if ref is None or not 0 <= ref < len(items):
@@ -296,7 +340,7 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed'):
         grid = np.arange(0.0, length, GRID_M)
         grid = np.append(grid, length)
         ref_t_at = np.interp(grid, _strict(rs), rt)
-    out = []
+    out, srcs = [], set()
     for i, it in enumerate(items):
         s_obj, lap = it['session'], it['lap']
         a, b = lap['start'], lap['end']
@@ -334,8 +378,15 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed'):
                 tr['hacc'] = _nums(hacc, 2)
                 tr['bad'] = [int(x) for x in bad]
                 _paint_and_marks(row, s_obj, m, a, (ft, fx, fy, fs), kt, paint, mark, calc)
+        if gsrc:
+            row['g'], how = friction_points(s_obj, a, b, gsrc)
+            if how:
+                srcs.add(how)
         out.append(row)
+    friction = None
+    if gsrc:
+        friction = {'want': gsrc, 'src': '+'.join(sorted(srcs)) or None, 'env': _envelope(out), 'step': dynamics.ENV_STEP_DEG}
     return {'ref': ref, 'ref_length_m': round(length, 1) if distance else None, 'distance': distance, 'laps': out,
-            'paint': paint, 'mark': mark,
+            'paint': paint, 'mark': mark, 'friction': friction,
             'origin': list(origin) if distance else None,
             'grid': _nums(grid, 1) if distance else [], 'ref_t': _nums(ref_t_at, 3) if distance else []}

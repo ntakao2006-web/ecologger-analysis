@@ -23,6 +23,11 @@ try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Arra
 state.paint = { mode: 'lap', ch: 'Speed', dotted: false, acc: false, marks: false, markCh: 'Speed', ranges: {} };
 try { const p = JSON.parse(localStorage.getItem('mappaint') || 'null'); if (p && typeof p === 'object') Object.assign(state.paint, p); } catch (e) { /* 覚えていなくてよい */ }
 const $ = (id) => document.getElementById(id);
+// 摩擦円に描く G の出どころ（SP-10-14）：'imu'（ふだん）か 'gnss'（測位から計算）
+state.gsrc = 'imu';
+try { if (localStorage.getItem('gsrc') === 'gnss') state.gsrc = 'gnss'; } catch (e) { /* 覚えていなくてよい */ }
+// カーソルを、コース図と摩擦円の両方へ
+function setCursors(x) { CourseMap.setCursor(x); GCircle.setCursor(x); }
 
 async function api(path, body) {
   const opt = { headers: { 'X-EcoAnalysis': '1' } };
@@ -393,7 +398,7 @@ function goSection(i, n) {
   if (!r) { status('この区間の所が分かりません（基準の周の測位が足りない）', 'ng'); return; }
   Chart.zoom(r[0], r[1]);
   CourseMap.fitRange(r[0], r[1]);
-  Chart.pin(r[0]); CourseMap.setCursor(r[0]); VideoPane.cursor(r[0], 'pin');
+  Chart.pin(r[0]); setCursors(r[0]); VideoPane.cursor(r[0], 'pin');
 }
 
 // ブレーキの数を押した：基準の周と、押した周（基準の周の行なら2番目の周）の動画を、それぞれのブレーキの踏み始めの瞬間で止めて並べる
@@ -409,7 +414,7 @@ function brakeMoments(i, rows, k) {
   const lap = state.overlay && state.overlay.laps.find((l) => l.key === me.key);
   let x = me.t;
   if (state.x === 'dist' && lap && lap.track) x = interpLine(lap.track.t, lap.track.s, me.t);
-  if (x !== null) { Chart.pinOnly(x); CourseMap.setCursor(x); }
+  if (x !== null) { Chart.pinOnly(x); setCursors(x); }
   VideoPane.moments(ok.map((p) => ({ key: p.key, t: p.t })));
   if (!missing.length) status(`ブレーキの踏み始めで、${ok.map((p) => p.lap + '周').join('と')}の動画を止めて並べました（カーソルを動かすと、いつもの「同じ所」に戻ります）`, 'ok');
 }
@@ -651,9 +656,13 @@ function renderChannelList(meta) {
       setChannels(cb.checked ? [...state.channels, name] : state.channels.filter((n) => n !== name));
       renderPicked();
     };
-    return el('label', {}, cb, ` ${c.label || name}${c.unit ? `（${c.unit}）` : ''}`);
+    return el('label', c.derived ? { title: DERIVED_NOTE[c.derived] } : {}, cb, ` ${c.label || name}${c.unit ? `（${c.unit}）` : ''}`);
   };
-  for (const [name, c] of meta) if (!c.calc) box.append(item(name, c));
+  for (const [name, c] of meta) if (!c.calc && !c.derived) box.append(item(name, c));
+  if ([...meta.values()].some((c) => c.derived)) {
+    box.append(el('div', { class: 'calchead', title: 'センサーの値ではなく、記録から計算した値です' }, '測位・G から計算（センサーの値ではない）'));
+    for (const [name, c] of meta) if (c.derived) box.append(item(name, c));
+  }
   box.append(el('div', { class: 'calchead' }, '計算チャンネル'));
   for (const [name, c] of meta) {
     if (!c.calc) continue;
@@ -662,6 +671,12 @@ function renderChannelList(meta) {
   }
   box.append(el('button', { type: 'button', class: 'link', onclick: () => openCalc(null) }, '＋ 計算チャンネルを作る'));
 }
+
+// 計算して足したチャンネルの断り書き（SP-10-14）
+const DERIVED_NOTE = {
+  gnss: '測位の位置を0.5秒でならして微分した値です（センサーの値ではありません）。旋回半径は、ほぼまっすぐな所（600 m より大きい）と 10 km/h より遅い所では出しません',
+  grip: '摩擦円の使い方：その所の合成Gを、その走行の同じ向きの合成Gの 99%（包絡）で割った値です（センサーの値ではありません）。100% を超える所もあります。10 km/h より遅い所は出しません',
+};
 
 function setChannels(list) {
   state.channels = list;
@@ -746,7 +761,7 @@ async function renderPicked() {
   $('graphEmpty').hidden = !empty;
   $('mapEmpty').hidden = !empty;
   if (empty) {
-    Chart.clear(); CourseMap.clear(); VideoPane.clear(); state.overlay = null; state.refSession = null; showVideo(0);
+    Chart.clear(); CourseMap.clear(); VideoPane.clear(); GCircle.clear(); $('gEmpty').hidden = false; state.overlay = null; state.refSession = null; showVideo(0);
     $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; renderLineControls(); renderSections(); return;
   }
   const meta = channelMeta(picks);
@@ -760,7 +775,8 @@ async function renderPicked() {
   try {
     j = await api('overlay', { laps: picks.map((p) => ({ id: p.id, lap: p.lap })), mode: state.mode,
                                channels: state.channels.filter((n) => meta.has(n)), ref: ref === null || ref < 0 ? null : ref,
-                               paint: state.paint.mode === 'value' ? state.paint.ch : null, mark: state.paint.markCh });
+                               paint: state.paint.mode === 'value' ? state.paint.ch : null, mark: state.paint.markCh,
+                               gsrc: state.gsrc });
   } catch (e) { status('裏の処理とつながっていません', 'ng'); return; }
   if (req !== state.req) return;                  // 新しい頼みが後から出ている
   if (!j.ok) { status(j.error, 'ng'); return; }
@@ -770,9 +786,11 @@ async function renderPicked() {
   const refKey = j.laps[j.ref] && j.laps[j.ref].key;
   state.refSession = state.sessions.find((s) => refKey && refKey.startsWith(s.id + ':')) || null;
   Chart.show($('plots'), j, { x, channels: state.channels.filter((n) => meta.has(n)).map((n) => meta.get(n)), color: colorFor,
-                              onCursor: (v, kind) => { CourseMap.setCursor(v); VideoPane.cursor(v, kind); } }, true);
+                              onCursor: (v, kind) => { setCursors(v); VideoPane.cursor(v, kind); } }, true);
   CourseMap.show(j, true);
-  CourseMap.setCursor(Chart.cursor());
+  GCircle.show(j);
+  $('gEmpty').hidden = j.laps.some((l) => l.g);
+  setCursors(Chart.cursor());
   loadOutline();
   showAutoRange();
   showVideo(VideoPane.show(j));
@@ -1320,7 +1338,7 @@ $('zerosec').onchange = () => { try { localStorage.setItem('zerosec', $('zerosec
 new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 CourseMap.init($('mapcv'), {
   x: () => state.x, color: colorFor, lines: mapLines, editing: () => !!state.draft,
-  onPick: (v) => { Chart.pin(v); CourseMap.setCursor(v); VideoPane.cursor(v, 'pin'); },
+  onPick: (v) => { Chart.pin(v); setCursors(v); VideoPane.cursor(v, 'pin'); },
   onPlace: placeLine, photo: () => $('photo').checked, paint: paintForMap,
   onFollow: (on) => { $('follow').checked = on; saveFollow(); },
   onTool: (t) => setOutlineTool(t),
@@ -1354,10 +1372,17 @@ $('outline').onchange = () => { try { localStorage.setItem('outline', $('outline
 new ResizeObserver(() => CourseMap.redraw()).observe($('mapcv'));
 VideoPane.init($('vbox'), {
   x: () => state.x, color: colorFor, rate: () => +$('vrate').value,
-  onTime: (x) => { Chart.pin(x); CourseMap.setCursor(x); },
+  onTime: (x) => { Chart.pin(x); setCursors(x); },
   onPlayState: (on) => { $('vplay').textContent = on ? '⏸ 止める' : '▶ 再生'; },
 });
 $('vplay').onclick = () => VideoPane.toggle();
+GCircle.init($('gcv'), $('ginfo'), $('gnote'), { x: () => state.x, color: colorFor });
+$('gsrcsel').value = state.gsrc;
+$('gsrcsel').onchange = (e) => {
+  state.gsrc = e.target.value === 'gnss' ? 'gnss' : 'imu';
+  try { localStorage.setItem('gsrc', state.gsrc); } catch (er) { /* 覚えなくてよい */ }
+  renderPicked();
+};
 // チャンネルの一覧は、外を押すか Esc で閉じる
 document.addEventListener('pointerdown', (e) => { const d = document.querySelector('.chanpick'); if (d.open && !d.contains(e.target)) d.open = false; });
 document.addEventListener('keydown', (e) => { const d = document.querySelector('.chanpick'); if (e.key === 'Escape' && d.open) d.open = false; });

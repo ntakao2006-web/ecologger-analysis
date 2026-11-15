@@ -8,14 +8,16 @@
 // - 「配置」で決まった並べ方を選べる。手で変えた並びは次に開いたときも同じ（この画面の localStorage）
 // - 動画の枠が横長なら、2本を左右に並べる（大きく出せるほうを選ぶ）
 const Layout = (() => {
-  const NAMES = ['laps', 'graph', 'video', 'map'];
-  const TITLES = { laps: '周の表', graph: 'グラフ', video: '動画', map: 'コース図' };
-  const right = (v, m) => ({ d: 'col', k: ['video', 'map'], s: [v, m] });
+  const NAMES = ['laps', 'graph', 'video', 'map', 'g'];
+  const TITLES = { laps: '周の表', graph: 'グラフ', video: '動画', map: 'コース図', g: 'G' };
+  // 摩擦円の枠（g）は、コース図の枠を左右に割って右に置く（SP-10-14）
+  const mapG = (m) => ({ d: 'row', k: ['map', 'g'], s: [m, 1 - m] });
+  const right = (v, m) => ({ d: 'col', k: ['video', mapG(0.62)], s: [v, m] });
   const PRESETS = {
     std: { tree: { d: 'row', k: ['laps', 'graph', right(0.55, 0.45)], s: [0.27, 0.39, 0.34] }, closed: [] },
-    video: { tree: { d: 'row', k: ['laps', 'graph', right(0.7, 0.3)], s: [0.27, 0.4, 0.6] }, closed: ['laps'] },
-    graph: { tree: { d: 'row', k: ['laps', 'graph', right(0.5, 0.5)], s: [0.27, 0.74, 0.26] }, closed: ['laps'] },
-    side: { tree: { d: 'row', k: ['laps', { d: 'col', k: ['graph', { d: 'row', k: ['video', 'map'], s: [0.6, 0.4] }], s: [0.5, 0.5] }], s: [0.27, 0.73] }, closed: [] },
+    video: { tree: { d: 'row', k: ['laps', 'graph', right(0.7, 0.3)], s: [0.27, 0.4, 0.6] }, closed: ['laps', 'g'] },
+    graph: { tree: { d: 'row', k: ['laps', 'graph', right(0.5, 0.5)], s: [0.27, 0.74, 0.26] }, closed: ['laps', 'g'] },
+    side: { tree: { d: 'row', k: ['laps', { d: 'col', k: ['graph', { d: 'row', k: ['video', 'map', 'g'], s: [0.5, 0.3, 0.2] }], s: [0.5, 0.5] }], s: [0.27, 0.73] }, closed: [] },
   };
   const GUT = 8, FOLDED = 30, FOLD_AT = 70, MIN_PANE = 150, EDGE = 22, KEY = 'layout2';
   const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -93,6 +95,8 @@ const Layout = (() => {
   function load() {
     try {
       const j = JSON.parse(localStorage.getItem(KEY) || 'null');
+      // G の枠ができる前に覚えた並び：コース図の右に G を足す
+      if (j && j.tree && !leaves(j.tree).includes('g') && leaves(j.tree).includes('map')) j.tree = insert(j.tree, 'map', 'g', 'right');
       if (j && valid(j.tree)) st = { tree: norm(j.tree), closed: (j.closed || []).filter((n) => NAMES.includes(n)), preset: j.preset || 'mine' };
     } catch (e) { /* 標準で開く */ }
   }

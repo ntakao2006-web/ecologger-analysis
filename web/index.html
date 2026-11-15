@@ -138,6 +138,19 @@
     <p id="mapEmpty" class="empty">周を選ぶと、走った線を描きます。図を押すと、グラフのカーソルがその場所へ動きます。</p>
     <canvas id="mapcv" class="mapcv"></canvas>
   </section>
+  <section class="pane gpane" data-pane="g">
+    <div class="gbar phead">
+      <h2>G</h2>
+      <label class="refpick" title="摩擦円に描く G。IMU が無い周は、どちらを選んでも測位から計算した値になります">値 <select id="gsrcsel">
+        <option value="imu">IMU</option><option value="gnss">測位から計算</option></select></label>
+      <span class="grow"></span>
+      <button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button>
+    </div>
+    <p id="gEmpty" class="empty">周を選ぶと、横G（右旋回が右）と前後G（加速が上）の摩擦円を描きます。カーソルの所の点を大きく、直前2秒を線で出します。</p>
+    <canvas id="gcv" class="gcv"></canvas>
+    <div id="ginfo" class="ginfo"></div>
+    <p id="gnote" class="note"></p>
+  </section>
 </main>
 <dialog id="calcdlg" class="calcdlg" aria-labelledby="calctitle">
   <h3 id="calctitle">計算チャンネルを作る</h3>
@@ -160,6 +173,7 @@
 <script src="map.js"></script>
 <script src="outedit.js"></script>
 <script src="video.js"></script>
+<script src="gcircle.js"></script>
 <script src="layout.js"></script>
 <script src="app.js"></script>
 </body>
