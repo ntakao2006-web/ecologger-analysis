@@ -28,7 +28,8 @@ class ServerTest(unittest.TestCase):
         cls.home = Path(cls.tmp.name) / 'home'
         cls.sample = write_sample(Path(cls.tmp.name) / 'sample.ecorun')
         cls.srv, cls.url = server.start(0, server.Store(cls.home))
-        cls.srv.store.picker = lambda: str(cls.sample)
+        cls.pick_starts = []
+        cls.srv.store.picker = lambda start=None: cls.pick_starts.append(start) or str(cls.sample)
 
     @classmethod
     def tearDownClass(cls):
@@ -110,6 +111,19 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(self.api('close', {'id': s['id']})[1]['ok'])
         self.assertEqual(self.api('sessions')[1]['sessions'], [])
         self.assertTrue(any((self.home / 'cache').glob('*.npz')))   # 読んだ表を覚えた
+
+    def test_last_and_pick_start(self):
+        key = self.api('open', {'path': str(self.sample)})[1]['session']['path']
+        # 選ぶ窓は、前回開いた走行の入っているフォルダーから
+        self.api('pick', {})
+        self.assertEqual(self.pick_starts[-1], str(Path(key).parent))
+        # 前回の続き：開いていた走行と周を覚え、もう無い走行は落とす
+        gone = str(Path(self.tmp.name) / 'gone.ecorun')
+        self.assertTrue(self.api('last', {'paths': [key, gone], 'laps': [[key, 2], [gone, 1]]})[1]['ok'])
+        self.assertEqual(self.api('last')[1]['last'], {'paths': [key], 'laps': [[key, 2]]})
+        for bad in ({'paths': 'x', 'laps': []}, {'paths': [key], 'laps': [['other', 1]]}, {'paths': [key], 'laps': [[key, True]]}):
+            self.assertEqual(self.api('last', bad)[0], 400, bad)
+        self.assertEqual(self.api('last')[1]['last']['paths'], [key])     # 形の違うものでは上書きしない
 
     def test_overlay(self):
         sid = self.api('open', {'path': str(self.sample)})[1]['session']['id']

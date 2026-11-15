@@ -17,6 +17,10 @@ body { background: var(--bg); color: var(--text); font: 14px/1.5 "Yu Gothic UI",
 .grow { flex: 1; }
 button, select { font: inherit; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
 button:disabled { color: var(--muted); cursor: default; }
+/* 「続きから」と「走行を開く…」を1つのボタンのようにつなげる */
+.openpair { display: inline-flex; }
+.openpair #resume { border-top-right-radius: 0; border-bottom-right-radius: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.openpair #resume:not([hidden]) + #open { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: none; }
 select { max-width: 260px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg label { padding: 4px 10px; cursor: pointer; font-size: 13px; }

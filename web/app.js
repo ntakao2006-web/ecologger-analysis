@@ -90,7 +90,9 @@ function render() {
   const box = $('sessions');
   box.textContent = '';
   if (!state.sessions.length) {
-    box.append(el('p', { class: 'empty' }, '「走行を開く…」で、走行のフォルダー（名前が .ecorun で終わるもの）を選びます。別の日の走行も続けて開けます。'));
+    box.append(el('p', { class: 'empty' }, state.last && state.last.paths.length
+      ? '「続きから」で、前回開いていた走行と選んでいた周をそのまま開きます。「別の走行…」で、ほかの走行のフォルダー（名前が .ecorun で終わるもの）を選びます。'
+      : '「走行を開く…」で、走行のフォルダー（名前が .ecorun で終わるもの）を選びます。別の日の走行も続けて開けます。'));
   } else {
     const best = bests();
     for (const s of state.sessions) box.append(sessionBlock(s, best[s.course || s.id]));
@@ -288,6 +290,7 @@ function renderLegend(data) {
 }
 
 async function renderPicked() {
+  saveLast();
   const picks = pickedLaps();
   const empty = !picks.length;
   $('graphEmpty').hidden = !empty;
@@ -584,6 +587,59 @@ async function pickAndOpen() {
   }
 }
 
+// ---------------------------------------------------------------- 前回の続き
+// 開いている走行と選んでいる周を、変わるたびに裏へ覚えさせる（何も開いていないときは、前の分を残す）。
+// 次に開いたとき「続きから」で、同じ走行を開き直して同じ周を選ぶ
+const baseName = (p) => p.split(/[\\/]/).pop().replace(/\.ecorun$/i, '');
+let lastTimer = 0;
+function saveLast() {
+  if (state.resuming || !state.sessions.length) return;
+  clearTimeout(lastTimer);
+  lastTimer = setTimeout(async () => {
+    const byId = new Map(state.sessions.map((s) => [s.id, s.path]));
+    const laps = [...state.picked].map((k) => { const i = k.lastIndexOf(':'); return [byId.get(k.slice(0, i)), Number(k.slice(i + 1))]; })
+      .filter(([p, n]) => p && Number.isInteger(n));
+    state.last = { paths: state.sessions.map((s) => s.path), laps };
+    renderResume();
+    try { await api('last', state.last); } catch (e) { /* 覚えられなくてもよい */ }
+  }, 400);
+}
+
+function renderResume() {
+  const last = state.last || { paths: [], laps: [] };
+  const todo = last.paths.filter((p) => !state.sessions.some((s) => s.path === p));
+  const b = $('resume');
+  b.hidden = !todo.length || !!state.resuming;
+  $('open').textContent = b.hidden ? '走行を開く…' : '別の走行…';
+  if (b.hidden) return;
+  const names = last.paths.map(baseName);
+  b.textContent = `続きから：${names[0]}${names.length > 1 ? ` ほか${names.length - 1}` : ''}`;
+  b.title = `前回開いていた走行を開き直し、選んでいた周（${last.laps.length}周）を選びます\n${last.paths.join('\n')}`;
+}
+
+async function loadLast() {
+  try { const j = await api('last'); state.last = j.last || null; } catch (e) { state.last = null; }
+  renderResume();
+}
+
+async function resume() {
+  const last = state.last;
+  if (!last || !last.paths.length) return;
+  state.resuming = true;            // 開き直している途中の形を、前回の分として覚えないように
+  renderResume();
+  try {
+    for (const p of last.paths) if (!state.sessions.some((s) => s.path === p)) await openPath(p);
+    for (const [p, n] of last.laps) {
+      const s = state.sessions.find((x) => x.path === p);
+      if (s && state.picked.size < MAX_PICK && lapsOf(s).some((x) => x.lap === n)) state.picked.add(`${s.id}:${n}`);
+    }
+  } finally {
+    state.resuming = false;
+  }
+  render();
+  if (state.sessions.length) status(`前回の続きを開きました（走行 ${last.paths.filter((p) => state.sessions.some((s) => s.path === p)).length}・周 ${state.picked.size}）`, 'ok');
+}
+
 async function closeSession(id) {
   try { const j = await api('close', { id }); if (j.rev !== undefined) state.rev = j.rev; } catch (e) { /* 画面からは消す */ }
   state.sessions = state.sessions.filter((s) => s.id !== id);
@@ -612,6 +668,7 @@ async function start() {
     await loadFormulas();
     const s = await api('sessions');
     state.sessions = s.sessions || [];
+    await loadLast();               // 何も開いていないときの案内を「続きから」に合わせるため、先に読む
     render();
     loadRecent();
   } catch (e) {
@@ -722,6 +779,7 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('beforeunload', (e) => { if (state.outedit && OutlineEditor.dirty()) { e.preventDefault(); e.returnValue = ''; } });
 
 $('open').onclick = pickAndOpen;
+$('resume').onclick = resume;
 $('recent').onchange = (e) => { const p = e.target.value; e.target.value = ''; if (p) openPath(p); };
 for (const r of document.querySelectorAll('input[name=mode]')) r.onchange = () => { state.mode = r.value; render(); };
 for (const r of document.querySelectorAll('input[name=xaxis]')) r.onchange = () => { state.xaxis = r.value; renderPicked(); };

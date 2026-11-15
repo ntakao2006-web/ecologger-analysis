@@ -9,7 +9,10 @@
 <body>
 <header class="bar">
   <h1>EcoLogger Analysis</h1>
-  <button id="open" type="button">走行を開く…</button>
+  <span class="openpair" role="group" aria-label="走行を開く">
+    <button id="resume" type="button" class="primary" hidden>続きから</button>
+    <button id="open" type="button" title="走行のフォルダー（.ecorun）を選んで開きます。選ぶ窓は、前回開いた走行のあるフォルダーから始まります">走行を開く…</button>
+  </span>
   <select id="recent" aria-label="最近開いた走行"><option value="">最近開いた走行</option></select>
   <div class="seg" role="radiogroup" aria-label="周の切り方">
     <label title="コースの線で、測位から周を切り直したもの"><input type="radio" name="mode" value="app" checked>コースの線で切った周</label>

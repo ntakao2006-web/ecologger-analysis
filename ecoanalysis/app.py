@@ -57,14 +57,14 @@ def webview2_version():
     return best
 
 
-def pick_folder(out):
-    """フォルダーを選ぶ窓を出し、選んだ所を out へ書く（exe のときの、別のプロセスでの呼ばれ方）"""
+def pick_folder(out, start=None):
+    """フォルダーを選ぶ窓を出し、選んだ所を out へ書く（exe のときの、別のプロセスでの呼ばれ方）。start：最初に開く所"""
     import tkinter
     import tkinter.filedialog
     r = tkinter.Tk()
     r.withdraw()
     r.attributes('-topmost', True)
-    got = tkinter.filedialog.askdirectory(title='走行のフォルダー（.ecorun）を選ぶ') or ''
+    got = tkinter.filedialog.askdirectory(title='走行のフォルダー（.ecorun）を選ぶ', initialdir=start or None) or ''
     Path(out).write_text(got, encoding='utf-8')
     return 0
 
@@ -125,9 +125,10 @@ def main(argv=None):
     ap.add_argument('--browser', action='store_true', help='専用の窓でなく、いつものブラウザで開く')
     ap.add_argument('--port', type=int, default=0, help='待つ番号（既定：空いている番号）')
     ap.add_argument('--pick-folder', metavar='FILE', help=argparse.SUPPRESS)
+    ap.add_argument('--pick-start', metavar='DIR', help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     if a.pick_folder:
-        return pick_folder(a.pick_folder)
+        return pick_folder(a.pick_folder, a.pick_start)
 
     paths = [str(Path(p).expanduser().resolve()) for p in a.paths]
     if paths and hand_over(paths):
@@ -152,8 +153,8 @@ def main(argv=None):
             return 0
         win = webview.create_window(f'{TITLE} {__version__}', url, width=1400, height=900, min_size=(900, 600))
 
-        def pick():
-            got = win.create_file_dialog(webview.FileDialog.FOLDER)
+        def pick(start=None):
+            got = win.create_file_dialog(webview.FileDialog.FOLDER, directory=start or '')
             return str(got[0]) if got else None
 
         def raise_window():

@@ -28,6 +28,7 @@ HOME = Path.home() / '.ecologger-analysis'
 API_HEADER = 'X-EcoAnalysis'
 MAX_BODY = 1 << 20
 RECENT_KEEP = 10
+LAST_KEEP, LAST_LAPS = 20, 12   # 前回の続きに覚える走行・周の数（開いておける数・重ねられる周の数より多め）
 CHUNK = 1 << 20
 MAX_RANGE = 8 << 20     # 途中から読む頼みに一度で返す上限。終わりを書かない頼み（bytes=N-）に残り全部を流し続けると、
                         # 画面がつながりを握ったまま読まなくなり、早送り・巻き戻しが止まる（Chromiumで確かめた）
@@ -304,22 +305,58 @@ class Store:
         except OSError:
             pass
 
+    # 前回の続き：閉じる前に開いていた走行と選んでいた周。{paths: [走行], laps: [[走行, 周], …]}（画面が変わるたびに書く）
+    def last(self):
+        try:
+            o = json.loads((self.home / 'last.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            o = None
+        if not isinstance(o, dict) or not isinstance(o.get('paths'), list):
+            return {'paths': [], 'laps': []}
+        # もう無い走行（消した・動かした）は落とす
+        paths = [p for p in o['paths'] if isinstance(p, str) and (Path(p) / 'session.json').is_file()][:LAST_KEEP]
+        laps = [x for x in (o.get('laps') if isinstance(o.get('laps'), list) else [])
+                if isinstance(x, list) and len(x) == 2 and x[0] in paths and isinstance(x[1], int) and not isinstance(x[1], bool)]
+        return {'paths': paths, 'laps': laps[:LAST_LAPS]}
+
+    def save_last(self, paths, laps):
+        """形が違えば ValueError"""
+        if not isinstance(paths, list) or not isinstance(laps, list) or not all(isinstance(p, str) for p in paths):
+            raise ValueError('paths・laps の形が違う')
+        paths = paths[:LAST_KEEP]
+        if not all(isinstance(x, list) and len(x) == 2 and x[0] in paths and isinstance(x[1], int) and not isinstance(x[1], bool) for x in laps):
+            raise ValueError('laps の形が違う')
+        try:
+            self.home.mkdir(parents=True, exist_ok=True)
+            (self.home / 'last.json').write_text(json.dumps({'paths': paths, 'laps': laps[:LAST_LAPS]}, ensure_ascii=False, indent=1), encoding='utf-8')
+        except OSError:
+            pass
+
+    def pick_start(self):
+        """フォルダーを選ぶ窓を最初に開く所：いちばん最近開いた走行の入っているフォルダー（無ければ None）"""
+        for p in self.recent():
+            parent = Path(p).parent
+            if parent.is_dir():
+                return str(parent)
+        return None
+
     def pick(self):
-        """フォルダーを選んでもらう。選ばなければ None"""
+        """フォルダーを選んでもらう（前回開いた走行のフォルダーから）。選ばなければ None"""
+        start = self.pick_start()
         if self.picker:
-            return self.picker()
-        return pick_with_tk()
+            return self.picker(start)
+        return pick_with_tk(start)
 
 
-def pick_with_tk():
-    """ブラウザで開いているとき（pywebview の窓が無いとき）の、フォルダーを選ぶ窓。別のプロセスで出す。
+def pick_with_tk(start=None):
+    """ブラウザで開いているとき（pywebview の窓が無いとき）の、フォルダーを選ぶ窓。別のプロセスで出す。start：最初に開く所。
     exe（PyInstaller）のときは -c が使えないので、exe 自身を --pick-folder で呼び、選んだ所をファイルで受け取る"""
     if getattr(sys, 'frozen', False):
         import tempfile
         fd, out = tempfile.mkstemp(suffix='.txt', prefix='ecoanalysis_pick_')
         os.close(fd)
         try:
-            subprocess.run([sys.executable, '--pick-folder', out], timeout=600)
+            subprocess.run([sys.executable, '--pick-folder', out] + (['--pick-start', start] if start else []), timeout=600)
             return Path(out).read_text(encoding='utf-8').strip() or None
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -328,11 +365,11 @@ def pick_with_tk():
                 os.unlink(out)
             except OSError:
                 pass
-    code = ('import tkinter as t, tkinter.filedialog as f\n'
+    code = ('import sys, tkinter as t, tkinter.filedialog as f\n'
             'r = t.Tk(); r.withdraw(); r.attributes("-topmost", True)\n'
-            'print(f.askdirectory(title="走行のフォルダー（.ecorun）を選ぶ") or "")\n')
+            'print(f.askdirectory(title="走行のフォルダー（.ecorun）を選ぶ", initialdir=(sys.argv[1] if len(sys.argv) > 1 else None)) or "")\n')
     try:
-        out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, encoding='utf-8', timeout=600)
+        out = subprocess.run([sys.executable, '-c', code] + ([start] if start else []), capture_output=True, text=True, encoding='utf-8', timeout=600)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return out.stdout.strip() or None
@@ -431,6 +468,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': True, 'sessions': self.store.list()})
             if path == '/api/recent':
                 return self._json({'ok': True, 'recent': self.store.recent()})
+            if path == '/api/last':
+                return self._json({'ok': True, 'last': self.store.last()})
             if path == '/api/formulas':
                 return self._json({'ok': True, 'formulas': self.store.formulas.list(), 'help': formula_help()})
             return self._json({'ok': False, 'error': 'not found'}, 404)
@@ -594,6 +633,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({'ok': True})
         if path == '/api/pick':
             return self._json({'ok': True, 'path': self.store.pick()})
+        if path == '/api/last':
+            try:
+                self.store.save_last(body.get('paths'), body.get('laps'))
+            except ValueError as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
+            return self._json({'ok': True})
         return self._json({'ok': False, 'error': 'not found'}, 404)
 
 
