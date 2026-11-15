@@ -278,6 +278,24 @@ const VideoPane = (() => {
       if (x === null && kind === 'leave') return;
       seekAll(x);
     },
+    // 2周を、それぞれの周の頭からの秒 t の瞬間で止めて並べる [{key, t}]（区間の表のブレーキの欄から。SP-10-38）。
+    // 次にカーソルが動けば、ふだんの「同じ所」に戻る
+    moments(list) {
+      if (playing) stop();
+      list.slice(0, slots.length).forEach((m, i) => {
+        const slot = slots[i], lap = laps.find((l) => l.key === m.key);
+        if (!lap) return;
+        slot.key = m.key; slot.sel.value = m.key;
+      });
+      refresh();
+      list.slice(0, slots.length).forEach((m, i) => {
+        const slot = slots[i], lap = lapOf(slot), seg = lap ? segAt(lap, m.t) : null;
+        slot.pos.textContent = `周の頭から ${m.t.toFixed(2)}秒`;
+        if (!seg) { showMiss(slot, 'この瞬間の動画がありません'); return; }
+        showMiss(slot, null);
+        setTime(slot, seg, videoSec(seg, m.t));
+      });
+    },
     toggle() { if (playing) stop(); else play(); },
     setRate(r) { if (playing) slots[0].video.playbackRate = r; },
     playing() { return playing; },

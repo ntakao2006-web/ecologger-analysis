@@ -982,6 +982,21 @@ const CourseMap = (() => {
     setEditor(ed) { editor = ed || null; if (cv) cv.style.cursor = ''; draw(); },
     toXY: (lat, lon) => toXY(lat, lon),
     toLatLon: (x, y) => toLatLon(x, y),
+    // 基準の周の横軸の値 a〜b の所が収まるように寄る（区間の表から寄るとき）。追うのはやめる
+    fitRange(a, b) {
+      const lap = data && data.origin && refLap();
+      if (!lap) return;
+      const t = lap.track, xa = t[curKey()];
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (let i = 0; i < t.x.length; i++) {
+        if (t.x[i] === null || xa[i] === null || xa[i] < a || xa[i] > b) continue;
+        x0 = Math.min(x0, t.x[i]); x1 = Math.max(x1, t.x[i]); y0 = Math.min(y0, t.y[i]); y1 = Math.max(y1, t.y[i]);
+      }
+      if (!isFinite(x0)) return;
+      if (follow) setFollow(false, true);
+      view = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, span: Math.max(x1 - x0, y1 - y0, 80) * 1.25 };
+      draw();
+    },
     // 基準の周の、横軸の値 v の所に置く線（区間の線を足す・動かすため）
     lineAt: (v) => (data && data.origin ? lineAt(v) : null),
     // (lat, lon) を基準の周の線へ下ろした所の横軸の値 {s, t}（グラフに区間の線を描くため）。測位が無ければ null

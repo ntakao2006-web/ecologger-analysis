@@ -7,6 +7,8 @@ const Chart = (() => {
   const PAD_L = 52, PAD_R = 10, PAD_T = 22, PAD_B = 4, AXIS_H = 22;
   let root = null, data = null, opts = null, view = null, viewX = null, cursorX = null, pinned = null, panels = [], drag = null;
   let marks = [];             // 区間の線の位置 [{x, label, sel}]（SP-10-37）
+  let zero = false;           // 区間の頭で差を0にする（SP-10-38）
+  let sel = null;             // Shift を押しながら引いている範囲 [始め, いま]
 
   window.addEventListener('mouseup', () => { drag = null; });
 
@@ -32,6 +34,18 @@ const Chart = (() => {
     return dx > 0 ? a + (b - a) * (x - xa[lo]) / dx : a;
   }
 
+  // 区間の頭（区間の線の位置）ごとに、そこでの差を引いて0から始める
+  function zeroed(xa, ya) {
+    const heads = marks.map((m) => m.x).filter((v) => v !== null && v !== undefined).sort((a, b) => a - b);
+    const out = new Array(ya.length);
+    let k = -1, base = 0;
+    for (let i = 0; i < ya.length; i++) {
+      while (k + 1 < heads.length && xa[i] !== null && xa[i] >= heads[k + 1]) { k++; base = valueAt(xa, ya, heads[k]) ?? base; }
+      out[i] = ya[i] === null ? null : ya[i] - (k < 0 ? 0 : base);
+    }
+    return out;
+  }
+
   function niceTicks(lo, hi, n) {
     if (!(hi > lo)) return [lo];
     const raw = (hi - lo) / n, p = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -51,7 +65,8 @@ const Chart = (() => {
   function series(panel, lap) {
     if (panel.kind === 'delta') {
       if (!lap.delta) return null;
-      return { x: opts.x === 'dist' ? data.grid : data.ref_t, y: lap.delta };
+      const x = opts.x === 'dist' ? data.grid : data.ref_t;
+      return { x, y: zero ? zeroed(x, lap.delta) : lap.delta };
     }
     const y = lap.channels[panel.name];
     return y ? { x: xs(lap), y } : null;
@@ -158,6 +173,10 @@ const Chart = (() => {
       }
       g.stroke();
     }
+    if (sel) {                    // Shift を押しながら引いている範囲
+      const a = px(Math.min(sel[0], sel[1]), w), b = px(Math.max(sel[0], sel[1]), w);
+      g.fillStyle = css('--accent'); g.globalAlpha = 0.15; g.fillRect(a, PAD_T, b - a, h - PAD_T - PAD_B); g.globalAlpha = 1;
+    }
     // 区間の線（縦の破線。札はいちばん上の段だけ）
     g.font = '10px "Yu Gothic UI", "Segoe UI", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'top';
     for (const m of marks) {
@@ -183,6 +202,7 @@ const Chart = (() => {
     name.className = 'pname';
     name.textContent = p.unit ? `${p.label}（${p.unit}）` : p.label;
     p.head.append(name);
+    if (p.kind === 'delta') rangeHead(p);
     if (cursorX === null) return;
     for (const lap of data.laps) {
       const s = series(p, lap);
@@ -194,6 +214,36 @@ const Chart = (() => {
       item.append(sw, v === null ? '—' : p.kind === 'delta' ? (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3) : fmtY(v));
       p.head.append(item);
     }
+  }
+
+  // 拡大して見ている範囲の頭から終わりまでのタイムの差（周ごと。0にしていない差で）
+  function rangeDiff() {
+    const [lo, hi] = fullRange();
+    if (!(view[0] > lo + 1e-6 || view[1] < hi - 1e-6)) return null;
+    const x = opts.x === 'dist' ? data.grid : data.ref_t;
+    return data.laps.filter((l) => l.delta).map((l) => {
+      const a = valueAt(x, l.delta, view[0]), b = valueAt(x, l.delta, view[1]);
+      return { lap: l, d: a === null || b === null ? null : b - a };
+    });
+  }
+  function rangeHead(p) {
+    const r = rangeDiff();
+    if (!r) return;
+    const box = document.createElement('span');
+    box.className = 'prange';
+    box.title = '拡大して見ている範囲の頭から終わりまでに、基準の周より何秒遅れたか（＋は遅れた）。区間の頭で0にしていても、この数は0にしない差で出す';
+    const at = (v) => (opts.x === 'dist' ? `${Math.round(v)}` : v.toFixed(1));
+    box.append(`範囲 ${at(view[0])}〜${at(view[1])} ${opts.x === 'dist' ? 'm' : '秒'}：`);
+    for (const { lap, d } of r) {
+      if (lap.ref) continue;
+      const item = document.createElement('span');
+      item.className = 'pval';
+      const sw = document.createElement('i');
+      sw.style.background = opts.color(lap.key);
+      item.append(sw, d === null ? '—' : (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(3));
+      box.append(item);
+    }
+    p.head.append(box);
   }
 
   function drawAxis() {
@@ -216,6 +266,7 @@ const Chart = (() => {
   function bind(cv) {
     cv.addEventListener('mousemove', (e) => {
       const r = cv.getBoundingClientRect(), x = xval(e.clientX - r.left, r.width);
+      if (drag && drag.sel) { sel = [drag.x0, x]; draw(); return; }
       if (drag) {
         if (Math.abs(e.clientX - drag.px) < 3) return;
       const dx = (e.clientX - drag.px) / (r.width - PAD_L - PAD_R) * (drag.view[1] - drag.view[0]);
@@ -225,9 +276,19 @@ const Chart = (() => {
       cursorX = x; draw();
       if (opts.onCursor) opts.onCursor(cursorX, 'hover');
     });
-    cv.addEventListener('mouseleave', () => { drag = null; cursorX = pinned; draw(); if (opts.onCursor) opts.onCursor(cursorX, 'leave'); });
-    cv.addEventListener('mousedown', (e) => { drag = { px: e.clientX, view: view.slice() }; e.preventDefault(); });
-    cv.addEventListener('mouseup', (e) => {     // 動かさずに離したら、その所にカーソルを留める
+    cv.addEventListener('mouseleave', () => { drag = null; sel = null; cursorX = pinned; draw(); if (opts.onCursor) opts.onCursor(cursorX, 'leave'); });
+    cv.addEventListener('mousedown', (e) => {
+      const r = cv.getBoundingClientRect();
+      drag = { px: e.clientX, view: view.slice(), sel: e.shiftKey, x0: xval(e.clientX - r.left, r.width) };
+      e.preventDefault();
+    });
+    cv.addEventListener('mouseup', (e) => {     // 動かさずに離したら、その所にカーソルを留める。Shift で引いたらその範囲に寄る
+      if (drag && drag.sel && sel && Math.abs(e.clientX - drag.px) >= 3) {
+        const a = Math.min(sel[0], sel[1]), b = Math.max(sel[0], sel[1]);
+        drag = null; sel = null; setView(a, b);
+        return;
+      }
+      sel = null;
       if (drag && Math.abs(e.clientX - drag.px) < 3) {
         const r = cv.getBoundingClientRect();
         pinned = cursorX = xval(e.clientX - r.left, r.width); draw();
@@ -272,6 +333,16 @@ const Chart = (() => {
     cursor() { return cursorX; },
     // 区間の線の位置（横軸の値）を描く
     setMarks(list) { marks = list || []; if (data && root) draw(); },
+    // 区間の頭で差を0にするか
+    setZero(on) { zero = !!on; if (data && root) draw(); },
+    // 横の範囲を a〜b にする（区間の表から寄るとき）。前後に少し余らせる
+    zoom(a, b) {
+      if (!data) return;
+      const m = Math.max((b - a) * 0.08, opts.x === 'dist' ? 10 : 0.5);
+      setView(a - m, b + m);
+    },
+    // カーソルだけを留める（動画には知らせない。区間の表から2周の動画を別の瞬間に並べるとき）
+    pinOnly(x) { if (!data) return; pinned = cursorX = x; draw(); },
     clear() { data = null; panels = []; if (root) root.textContent = ''; },
   };
 })();

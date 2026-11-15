@@ -42,8 +42,9 @@
       </div>
       <details class="chanpick"><summary>チャンネル</summary><div id="chanlist" class="chanlist"></div></details>
       <label class="refpick">基準 <select id="refsel"></select></label>
+      <label class="refpick" title="基準の周との差のグラフを、区間ごとにその頭で0から描きます。1つのコーナーの中で得・損がどう増えるかを見るため（区間の線があるときだけ）"><input type="checkbox" id="zerosec" disabled> 区間の頭で差を0に</label>
       <span class="grow"></span>
-      <span class="hint">ホイールで拡大・ドラッグで移動・ダブルクリックで全体</span>
+      <span class="hint" title="拡大しているときは、差の段の見出しに、見ている範囲の頭から終わりまでのタイムの差を周ごとに出します">ホイールで拡大・ドラッグで移動・Shift＋ドラッグで範囲に寄る・ダブルクリックで全体</span>
       <button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button>
     </div>
     <div id="legend" class="legend"></div>

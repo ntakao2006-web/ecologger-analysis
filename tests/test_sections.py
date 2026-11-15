@@ -87,6 +87,8 @@ class SectionsTest(unittest.TestCase):
         self.assertEqual(len(ref), 2)
         self.assertIsNone(ref[0]['brake_m'])                    # 周の頭の区間はブレーキの切り目ではない
         self.assertAlmostEqual(ref[1]['brake_m'], 0.0, delta=2.0)   # 線を置いた周は、踏み始めが線の上
+        self.assertAlmostEqual(ref[1]['brake_t'], cut[1]['split_t'][0] - cut[1]['start'], delta=0.1)   # 踏み始めの周の頭からの秒
+        self.assertIsNone(ref[0]['brake_t'])
         sp = np.asarray(self.s.channels['Speed'], float)
         at = float(np.interp(cut[1]['split_t'][0], self.s.t, sp))
         self.assertAlmostEqual(ref[1]['entry'], at, delta=0.1)

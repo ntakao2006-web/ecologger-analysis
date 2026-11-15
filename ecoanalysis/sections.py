@@ -117,8 +117,9 @@ def _bounds(lap):
 
 
 def metrics(s, laps, dyn=None):
-    """周ごとの区間の数 [{entry, exit, brake_m, min_kmh, min_at_m, min_radius_m}]（区間の数だけ）を laps の各周の 'sec' に入れる。
+    """周ごとの区間の数 [{entry, exit, brake_m, brake_t, min_kmh, min_at_m, min_radius_m}]（区間の数だけ）を laps の各周の 'sec' に入れる。
     entry・exit：区間の頭・終わりの線を越えたときの速さ（km/h）。brake_m：区間の頭の線からブレーキの踏み始めまでの距離（m、＋は奥）。
+    brake_t：その踏み始めの、周の頭からの秒（区間の表から2周の動画をその瞬間に並べるため。SP-10-38）。
     min_kmh・min_at_m：区間の中の最小の速さと、その所の区間の頭からの距離。min_radius_m：ボトムの前後2秒の最小の旋回半径（測位から）"""
     sp = _speed(s)
     for lap in laps:
@@ -146,12 +147,13 @@ def metrics(s, laps, dyn=None):
                 out.append(None)
                 continue
             m = (st >= p) & (st <= q)
-            row = {'entry': round(v_at(p), 1), 'exit': round(v_at(q), 1), 'brake_m': None,
+            row = {'entry': round(v_at(p), 1), 'exit': round(v_at(q), 1), 'brake_m': None, 'brake_t': None,
                    'min_kmh': None, 'min_at_m': None, 'min_radius_m': None}
             near = [w for w in brakes if p - BRAKE_SEARCH_BACK_S <= w <= p + (q - p) / 2]
             if near and p > lap['start']:          # 周の頭（コントロールライン）の区間はブレーキの切り目ではない
                 w = min(near, key=lambda w: abs(w - p))
                 row['brake_m'] = round(d_at(w) - d_at(p) if w >= lap['start'] else -_back_m(st, sv, w, p), 1)
+                row['brake_t'] = round(float(w - lap['start']), 3)
             if m.sum() >= 1:
                 k = int(np.argmin(sv[m]))
                 tmin = float(st[m][k])

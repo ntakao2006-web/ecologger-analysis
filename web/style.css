@@ -109,6 +109,10 @@ body.resizing video, body.resizing canvas, body.moving video, body.moving canvas
 .sectable .faster { color: var(--ok); }
 .sectable .slower { color: var(--ng); }
 .sectable tr.secsel td { background: var(--best); }
+.sectable tr.secrow { cursor: pointer; }
+.sectable tr.secrow:hover td { background: var(--row); }
+.sectable td.brakecell { text-decoration: underline dotted; text-underline-offset: 3px; }
+.prange { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); margin-left: 6px; padding-left: 8px; border-left: 1px solid var(--line); }
 .secname { width: 12em; font: inherit; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); }
 .secedit button { padding: 1px 8px; font-size: 12px; }
 .sectable .lapdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }

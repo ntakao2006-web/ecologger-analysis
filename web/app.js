@@ -245,15 +245,22 @@ function renderSections() {
       let cls = 'num time';
       if (has(t) && has(best) && Math.abs(t - best) < 0.0005) cls += ' sbest';
       else if (k > 0 && has(t) && has(rt)) cls += t < rt - 0.0005 ? ' faster' : t > rt + 0.0005 ? ' slower' : '';
-      body.append(el('tr', { class: k === 0 ? 'secfirst' : '' },
+      const brakeCell = el('td', { class: 'num' + (i > 0 && has(m.brake_t) ? ' brakecell' : '') }, i === 0 ? '' : signed(m.brake_m));
+      if (i > 0 && has(m.brake_t)) {
+        brakeCell.title = 'ブレーキの踏み始めの瞬間で、2周の動画を止めて並べます（基準の周と、この周。基準の周の行なら2番目の周と）';
+        brakeCell.onclick = (e) => { e.stopPropagation(); brakeMoments(i, laps, k); };
+      }
+      const tr = el('tr', { class: 'secrow' + (k === 0 ? ' secfirst' : ''), title: '押すと、地図・グラフ・動画をこの区間へ動かします' },
         el('td', { class: 'sec' }, k === 0 ? String(i + 1) + ((s.split_names || [])[i] ? ' ' + s.split_names[i] : '') : ''),
         el('td', { class: 'num', title: `${r.s.title} ${r.lap}周${k === 0 ? '（基準）' : ''}` },
            el('span', { class: 'lapdot', style: `background:${colorFor(r.key)}` }), String(r.lap)),
         el('td', { class: cls }, has(t) ? t.toFixed(3) : '—'),
         el('td', { class: 'num diff' }, has(best) && has(t) ? gap(t - best) : ''),
-        el('td', { class: 'num' }, num(m.entry)), el('td', { class: 'num' }, i === 0 ? '' : signed(m.brake_m)),
+        el('td', { class: 'num' }, num(m.entry)), brakeCell,
         el('td', { class: 'num' }, num(m.min_kmh)), el('td', { class: 'num' }, num(m.min_at_m, 0)),
-        el('td', { class: 'num' }, num(m.min_radius_m, 0)), el('td', { class: 'num' }, num(m.exit))));
+        el('td', { class: 'num' }, num(m.min_radius_m, 0)), el('td', { class: 'num' }, num(m.exit)));
+      tr.onclick = () => goSection(i, n);
+      body.append(tr);
     });
     if (st && has(st.mean[i])) {
       body.append(el('tr', { class: 'secstat' }, el('td', {}, ''), el('td', { colspan: '9' },
@@ -262,8 +269,61 @@ function renderSections() {
     }
   }
   box.append(el('div', { class: 'tablewrap' }, el('table', { class: 'laptable sectable' }, el('thead', {}, thead), body)));
-  box.append(el('p', { class: 'note' }, `区間1はコントロールラインから最初の区間の線まで。区間の線は地図に「区2」などの札で出ます。` +
+  box.append(el('p', { class: 'note' }, `行を押すとその区間へ、ブレーキの数を押すと2周の動画をその瞬間で並べます。区間1はコントロールラインから最初の区間の線まで。区間の線は地図に「区2」などの札で出ます。` +
     `色：紫＝その区間のベスト、緑・赤＝基準の周（${refRow.lap}周）より速い・遅い。選んだ周のうち${SEC_LAPS}周まで`));
+}
+
+// 区間 i（n 区間のうち）の、基準の周の横軸の範囲 [頭, 終わり]。分からなければ null
+function sectionRange(i, n) {
+  const o = state.overlay, L = mapLines();
+  if (!o || !L || !L.splits) return null;
+  const key = state.x === 'dist' ? 's' : 't';
+  const refLap = o.laps[o.ref];
+  const end = key === 's' ? o.ref_length_m : refLap && refLap.time_s;
+  const heads = L.splits.map((ln) => { const r = CourseMap.refAt(ln.lat, ln.lon); return r ? r[key] : null; });
+  const a = i === 0 ? 0 : heads[i - 1], b = i >= n - 1 ? end : heads[i];
+  return a === null || a === undefined || b === null || b === undefined ? null : [a, b];
+}
+
+// 行を押した：地図をその区間に寄せ、グラフの横の範囲をその区間（前後に少し余らせる）にし、カーソル・動画を区間の頭へ
+function goSection(i, n) {
+  const r = sectionRange(i, n);
+  if (!r) { status('この区間の所が分かりません（基準の周の測位が足りない）', 'ng'); return; }
+  Chart.zoom(r[0], r[1]);
+  CourseMap.fitRange(r[0], r[1]);
+  Chart.pin(r[0]); CourseMap.setCursor(r[0]); VideoPane.cursor(r[0], 'pin');
+}
+
+// ブレーキの数を押した：基準の周と、押した周（基準の周の行なら2番目の周）の動画を、それぞれのブレーキの踏み始めの瞬間で止めて並べる
+function brakeMoments(i, rows, k) {
+  const a = rows[0], b = k === 0 ? rows[1] : rows[k];
+  const pick = [a, b].filter(Boolean).map((r) => ({ key: r.key, lap: r.lap, t: (r.x.sec[i] || {}).brake_t }));
+  const missing = pick.filter((p) => p.t === null || p.t === undefined);
+  if (missing.length) status(`${missing.map((p) => p.lap + '周').join('・')}はこの区間でブレーキを踏んでいません`, 'ng');
+  const ok = pick.filter((p) => p.t !== null && p.t !== undefined);
+  if (!ok.length) return;
+  // カーソルは押した周の踏み始めの所（基準の周の横軸で）
+  const me = ok.find((p) => p.key === (k === 0 ? a : rows[k]).key) || ok[0];
+  const lap = state.overlay && state.overlay.laps.find((l) => l.key === me.key);
+  let x = me.t;
+  if (state.x === 'dist' && lap && lap.track) x = interpLine(lap.track.t, lap.track.s, me.t);
+  if (x !== null) { Chart.pinOnly(x); CourseMap.setCursor(x); }
+  VideoPane.moments(ok.map((p) => ({ key: p.key, t: p.t })));
+  if (!missing.length) status(`ブレーキの踏み始めで、${ok.map((p) => p.lap + '周').join('と')}の動画を止めて並べました（カーソルを動かすと、いつもの「同じ所」に戻ります）`, 'ok');
+}
+
+// 増える一方の xa（null は飛ばす）で、x のときの ya
+function interpLine(xa, ya, x) {
+  let pi = -1;
+  for (let i = 0; i < xa.length; i++) {
+    if (xa[i] === null || ya[i] === null) continue;
+    if (xa[i] >= x) {
+      if (pi < 0) return ya[i];
+      return ya[pi] + (ya[i] - ya[pi]) * (x - xa[pi]) / ((xa[i] - xa[pi]) || 1);
+    }
+    pi = i;
+  }
+  return pi < 0 ? null : ya[pi];
 }
 
 async function sectionRequest(action, body, btn) {
@@ -404,6 +464,8 @@ function updateMarks() {
     return { x: r ? r[key] : null, label: (L.splitLabels && L.splitLabels[i]) || splitLabel(i, ''), sel: L.splitSel === i };
   });
   Chart.setMarks(out);
+  $('zerosec').disabled = !out.length;
+  Chart.setZero($('zerosec').checked && out.length > 0);
 }
 
 // 直している間の区間の枠
@@ -1136,6 +1198,9 @@ $('recent').onchange = (e) => { const p = e.target.value; e.target.value = ''; i
 for (const r of document.querySelectorAll('input[name=mode]')) r.onchange = () => { state.mode = r.value; render(); };
 for (const r of document.querySelectorAll('input[name=xaxis]')) r.onchange = () => { state.xaxis = r.value; renderPicked(); };
 $('refsel').onchange = (e) => { state.ref = e.target.value; renderPicked(); };
+// 区間の頭で差を0にするか（ふだんは切。選び直しは覚える）
+try { $('zerosec').checked = localStorage.getItem('zerosec') === '1'; } catch (e) { $('zerosec').checked = false; }
+$('zerosec').onchange = () => { try { localStorage.setItem('zerosec', $('zerosec').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } updateMarks(); };
 new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 CourseMap.init($('mapcv'), {
   x: () => state.x, color: colorFor, lines: mapLines, editing: () => !!state.draft,
