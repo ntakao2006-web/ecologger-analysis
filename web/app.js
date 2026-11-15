@@ -731,7 +731,13 @@ CourseMap.init($('mapcv'), {
   x: () => state.x, color: colorFor, lines: mapLines, editing: () => !!state.draft,
   onPick: (v) => { Chart.pin(v); CourseMap.setCursor(v); VideoPane.cursor(v, 'pin'); },
   onPlace: placeLine, photo: () => $('photo').checked, paint: paintForMap,
+  onFollow: (on) => { $('follow').checked = on; saveFollow(); },
 });
+// 車を追うか（ふだんは追わない。図を手で引くと外れる。選び直しは覚える）
+function saveFollow() { try { localStorage.setItem('follow', $('follow').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } }
+try { $('follow').checked = localStorage.getItem('follow') === '1'; } catch (e) { $('follow').checked = false; }
+CourseMap.setFollow($('follow').checked);
+$('follow').onchange = () => { saveFollow(); CourseMap.setFollow($('follow').checked); };
 $('paintsel').onchange = (e) => { state.paint.mode = e.target.value; paintChanged(); };
 $('paintch').onchange = (e) => { state.paint.ch = e.target.value; paintChanged(); };
 $('markch').onchange = (e) => { state.paint.markCh = e.target.value; paintChanged(); };

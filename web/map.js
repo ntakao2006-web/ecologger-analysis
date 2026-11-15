@@ -15,6 +15,10 @@ const CourseMap = (() => {
   let outline = null, outlineNote = null;   // コース図 {lines: [[[lat, lon], …]]} と、作っている・作れないときの知らせ
   let outlineXY = null, outlineKey = null;  // コース図を m に直したもの（描くたびに直さない）
   let editor = null;                         // コース図のエディタ（OutlineEditor。直していないときは null）
+  // 車を追う：オンのあいだは、描くたびに基準の周の車（カーソルの位置）を図の真ん中へ。倍率は変えない。
+  // 図を手で引くと、リアルタイムの地図（tools/home_telemetry/map.html）と同じく追うのをやめる
+  let follow = false;
+  const FOLLOW_SPAN = 250;                   // 追い始めるとき、全体を見ている倍率ならここまで寄る（m）
 
   function css(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
 
@@ -28,6 +32,28 @@ const CourseMap = (() => {
   }
 
   function refLap() { return data.laps.find((l) => l.ref && l.track) || data.laps.find((l) => l.track); }
+
+  function curKey() { return opts.x() === 'dist' ? 's' : 't'; }
+  // 周 lap の車の位置（m）。カーソルが無い・周の外なら null
+  function carAt(lap) {
+    if (cursor === null || !lap || !lap.track) return null;
+    const p = posAt(lap.track, curKey(), cursor);
+    return p && isFinite(p[0]) && isFinite(p[1]) ? p : null;
+  }
+  // 追っているなら、図の真ん中を基準の周の車へ（直している・線を置いているとき、車を引いているあいだは動かさない）
+  function centerOnCar() {
+    if (!follow || (drag && drag.car) || (editor && editor.active()) || opts.editing()) return;
+    const p = carAt(refLap());
+    if (!p) return;
+    if (followZoom) { followZoom = false; if (view.span > FOLLOW_SPAN * 2) view.span = FOLLOW_SPAN; }
+    view.cx = p[0]; view.cy = p[1];
+  }
+  let followZoom = false;                    // 次に車が見つかったとき、全体を見ている倍率なら寄る
+  function setFollow(on, tell) {
+    follow = !!on;
+    followZoom = follow;
+    if (tell && opts.onFollow) opts.onFollow(follow);
+  }
 
   function fit() {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -509,6 +535,7 @@ const CourseMap = (() => {
       g.fillText('基準の周の測位が足りないので、コース図を描けません', w / 2, h / 2);
       return;
     }
+    centerOnCar();
     const photo = !!(opts.photo && opts.photo());
     if (photo) drawPhoto(g, w, h);
     drawOutline(g, w, h, photo);
@@ -545,11 +572,10 @@ const CourseMap = (() => {
     }
     // カーソルの位置（車）。印の●と見分けがつくよう、走る向きを指す矢じりを、白黒の縁と薄い光の輪で描く
     if (cursor !== null) {
-      const key = opts.x() === 'dist' ? 's' : 't', dt = key === 's' ? 4 : 0.4;
+      const key = curKey(), dt = key === 's' ? 4 : 0.4;
       for (const lap of data.laps) {
-        if (!lap.track) continue;
-        const p = posAt(lap.track, key, cursor);
-        if (!p || !isFinite(p[0])) continue;
+        const p = carAt(lap);
+        if (!p) continue;
         const [px, py] = P(p[0], p[1], w, h);
         const a = posAt(lap.track, key, cursor + dt) || p, b = posAt(lap.track, key, cursor - dt) || p;
         const [ax, ay] = P(a[0], a[1], w, h), [bx, by] = P(b[0], b[1], w, h);
@@ -604,8 +630,47 @@ const CourseMap = (() => {
     return { i: best, dist: Math.sqrt(bd), s: t.s[best], t: t.t[best], bearing };
   }
 
+  // 画面の点 (mx, my) の近く（14画素の内）にある車の周。重なれば基準の周
+  function pickCar(mx, my, w, h) {
+    let best = null, bd = 14 * 14;
+    for (const lap of data.laps) {
+      const p = carAt(lap);
+      if (!p) continue;
+      const [px, py] = P(p[0], p[1], w, h), d = (px - mx) ** 2 + (py - my) ** 2;
+      if (d < bd || (d === bd && lap.ref)) { bd = d; best = lap; }
+    }
+    return best;
+  }
+  // 周 lap の線で (x, y)（m）にいちばん近い所の横軸の値（線分へ下ろして間を補う）{v, i, d}。
+  // 車を引くときは、前の番号 i0 の前後から探す（近くを並んで走る別の所へ跳ばないように）。そこが 15 m より遠いときだけ全体から
+  function valueNear(lap, x, y, i0) {
+    const t = lap.track, xa = t[curKey()], n = t.x.length;
+    const search = (lo, hi) => {
+      let best = null;
+      for (let i = lo; i < hi; i++) {
+        const ax = t.x[i], ay = t.y[i], bx = t.x[i + 1], by = t.y[i + 1];
+        if (ax === null || bx === null || xa[i] === null || xa[i + 1] === null) continue;
+        const vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
+        const f = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / L2)) : 0;
+        const d = Math.hypot(ax + vx * f - x, ay + vy * f - y);
+        if (!best || d < best.d) best = { d, i, v: xa[i] + (xa[i + 1] - xa[i]) * f };
+      }
+      return best;
+    };
+    const win = Math.max(20, Math.round(n * 0.08));
+    let b = i0 !== null && i0 !== undefined ? search(Math.max(0, i0 - win), Math.min(n - 1, i0 + win)) : null;
+    if (!b || b.d > 15) { const all = search(0, n - 1); if (all && (!b || all.d < b.d)) b = all; }
+    return b;
+  }
+
   function bind() {
     const editing = () => editor && editor.active() && data && data.origin;
+    let pickReq = null;                       // 車を引いているあいだのカーソルの動かし（1こまに1回）
+    const pickSoon = (v) => {
+      const first = pickReq === null;
+      pickReq = v;
+      if (first) requestAnimationFrame(() => { const x = pickReq; pickReq = null; if (x !== null) opts.onPick(x); });
+    };
     const geo = (r) => ({ k: scale(r.width, r.height), nearestTrack });
     cv.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
@@ -614,12 +679,17 @@ const CourseMap = (() => {
         const r = cv.getBoundingClientRect();
         const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
         if (editor.down(x, y, geo(r))) { drag.edit = true; cv.style.cursor = 'grabbing'; }
+      } else if (data && data.origin && !opts.editing()) {
+        const r = cv.getBoundingClientRect();
+        const lap = pickCar(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        if (lap) { drag.car = { lap, i: null }; hover = null; cv.style.cursor = 'grabbing'; }
       }
     });
     window.addEventListener('mouseup', (e) => {
       if (!drag) return;
       const was = drag; drag = null;
       if (was.edit) { editor.up(); cv.style.cursor = ''; draw(); return; }
+      if (was.car) { cv.style.cursor = ''; draw(); return; }   // 追っているなら、ここで車を真ん中へ戻す
       if (moved || !data || !data.origin) return;
       const r = cv.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
@@ -642,6 +712,14 @@ const CourseMap = (() => {
         later();
         return;
       }
+      if (drag && drag.car) {                 // 車を引く：周の線に沿って、カーソル（グラフ・動画も）を動かす
+        moved = true;
+        const r = cv.getBoundingClientRect();
+        const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        const b = valueNear(drag.car.lap, x, y, drag.car.i);
+        if (b) { drag.car.i = b.i; pickSoon(b.v); }
+        return;
+      }
       if (!drag && editing()) {
         const r = cv.getBoundingClientRect();
         const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
@@ -652,6 +730,8 @@ const CourseMap = (() => {
       if (!drag) {
         if (!data || !data.origin) return;
         const r = cv.getBoundingClientRect(), was = hover;
+        const onCar = !opts.editing() && pickCar(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        cv.style.cursor = onCar ? 'grab' : '';
         hover = pickHover(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
         const same = (a, b) => (a && b ? a.lap === b.lap && a.i === b.i && a.mark === b.mark : a === b);
         if (!same(was, hover)) later();
@@ -661,6 +741,7 @@ const CourseMap = (() => {
       const r = cv.getBoundingClientRect(), k = scale(r.width, r.height);
       if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) moved = true;
       if (!moved) return;
+      if (follow) setFollow(false, true);     // 図を手で引いたら追うのをやめる
       view.cx = drag.cx - (e.clientX - drag.x) / k; view.cy = drag.cy + (e.clientY - drag.y) / k; draw();
     });
     cv.addEventListener('wheel', (e) => {
@@ -672,17 +753,20 @@ const CourseMap = (() => {
       view.cx = x + (view.cx - x) * f; view.cy = y + (view.cy - y) * f;
       draw();
     }, { passive: false });
-    cv.addEventListener('dblclick', () => { if (editing()) return; fit(); draw(); });   // 直しているときは押し直しで図が戻らないように
+    cv.addEventListener('dblclick', () => { if (editing()) return; if (follow) setFollow(false, true); fit(); draw(); });   // 直しているときは押し直しで図が戻らないように
   }
 
   return {
     // o：{x() 'dist'|'time', color(key), lines() {line, sectors, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか,
     //     paint() {mode 'lap'|'value'|'rate'|'delta', ch, chLabel, unit, lo, hi 段の範囲を手で（null は自動）, dotted, acc, marks, markLabel, markUnit}}
     init(canvas, o) { cv = canvas; opts = o; bind(); },
-    show(d, keepView) { const same = data && d && data.origin && d.origin && data.origin[0] === d.origin[0] && data.origin[1] === d.origin[1]; data = d; hover = null; if (!(keepView && same && view)) fit(); draw(); },
+    show(d, keepView) { const same = data && d && data.origin && d.origin && data.origin[0] === d.origin[0] && data.origin[1] === d.origin[1]; data = d; hover = null; if (!(keepView && same && view)) { fit(); followZoom = follow; } draw(); },
     // いま塗っている段の範囲（自動のときの数を入れ欄の見本に出すため）
     paintRange() { return paintNow && paintNow.rng; },
     setCursor(x) { cursor = x; draw(); },
+    // 車を追う（オン・オフ）。図を手で引いて外れたときは opts.onFollow(false) で知らせる
+    setFollow(on) { setFollow(on, false); draw(); },
+    following: () => follow,
     // コース図（null で消す）と、図の上に出す知らせ（作っている・作れない）
     setOutline(o, note) { outline = o || null; outlineNote = note || null; outlineXY = null; draw(); },
     // コース図のエディタ（OutlineEditor か null）。直す中身の座標を出し入れするための変換も渡す
