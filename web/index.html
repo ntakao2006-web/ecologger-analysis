@@ -15,8 +15,8 @@
     <label title="コースの線で、測位から周を切り直したもの"><input type="radio" name="mode" value="app" checked>コースの線で切った周</label>
     <label title="ロガーが走りながら数えた周"><input type="radio" name="mode" value="logger">ロガーの数え</label>
   </div>
-  <label class="refpick" title="枠の並べ方。枠の間の線をドラッグすれば、好きな大きさにもできます">配置 <select id="layoutsel">
-    <option value="std">標準</option><option value="video">動画を大きく</option><option value="graph">グラフを大きく</option>
+  <label class="refpick" title="枠の並べ方。枠の間の線をドラッグすると大きさが、枠の見出しをドラッグしてほかの枠の上下左右へ落とすと並びが変わります">配置 <select id="layoutsel">
+    <option value="std">標準</option><option value="video">動画を大きく</option><option value="graph">グラフを大きく</option><option value="side">動画とコース図を左右に</option>
     <option value="mine" hidden>自分で変えた配置</option></select></label>
   <span class="grow"></span>
   <span id="status" class="status">つないでいます…</span>
@@ -24,13 +24,11 @@
 <p id="modenote" class="modenote" hidden></p>
 <main class="layout" id="layout">
   <section class="pane laps" data-pane="laps">
-    <button id="lapsopen" class="lapsopen" type="button" title="周の表を開く">周の表 ▸</button>
     <div class="gbar phead"><h2>周</h2><span class="grow"></span>
-      <button id="lapsfold" class="pbtn" type="button" title="周の表を畳んで、ほかの枠を広げる（左の細い帯を押すと開く）">◂</button><button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button></div>
+      <button id="lapsfold" class="pbtn" type="button" title="周の表を畳んで、ほかの枠を広げる（細い帯を押すと開く）">◂</button><button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button></div>
     <div id="message" class="message" hidden></div>
     <div id="sessions"><p class="empty">「走行を開く…」で、走行のフォルダー（名前が .ecorun で終わるもの）を選びます。別の日の走行も続けて開けます。</p></div>
   </section>
-  <div class="gutter gv" data-gut="l" role="separator" aria-orientation="vertical" tabindex="0" title="ドラッグで幅を変える（左へ寄せきると周の表を畳む）。ダブルクリックで、表がちょうど収まる幅へ"></div>
   <section class="pane graph" data-pane="graph">
     <div class="gbar phead">
       <h2>グラフ</h2>
@@ -48,8 +46,6 @@
     <p id="graphEmpty" class="empty">周の表で周を選ぶと、ここに重ねて出します（8周まで）。2周以上選ぶと、基準の周とのタイムの差も出します。</p>
     <div id="plots" class="plots"></div>
   </section>
-  <div class="gutter gv" data-gut="r" role="separator" aria-orientation="vertical" tabindex="0" title="ドラッグで幅を変える。ダブルクリックで標準へ"></div>
-  <div class="rcol" id="rcol">
   <section class="pane video" data-pane="video">
     <div class="gbar phead">
       <h2>動画</h2>
@@ -62,11 +58,11 @@
     <p id="videoEmpty" class="empty">選んだ周に動画があれば、ここに2周を並べます（枠が横長なら左右、縦長なら上下）。グラフやコース図のカーソルに合わせて動きます。</p>
     <div id="vbox" class="vbox" hidden></div>
   </section>
-  <div class="gutter gh" data-gut="v" role="separator" aria-orientation="horizontal" tabindex="0" title="ドラッグで高さを変える。ダブルクリックで標準へ"></div>
   <section class="pane map" data-pane="map">
     <div class="gbar phead">
       <h2>コース図</h2>
       <label class="refpick">線 <select id="linesel" disabled></select></label>
+      <label class="refpick" title="国土地理院の航空写真を下に敷く。初めて見る所だけネットが要り、一度見た所は手元に残るのでネットが無くても出ます"><input type="checkbox" id="photo"> 航空写真</label>
       <button id="editline" type="button" disabled>線を直す</button>
       <button id="delline" type="button" hidden>この版を消す</button>
       <span class="grow"></span>
@@ -85,7 +81,6 @@
     <p id="mapEmpty" class="empty">周を選ぶと、走った線を描きます。図を押すと、グラフのカーソルがその場所へ動きます。</p>
     <canvas id="mapcv" class="mapcv"></canvas>
   </section>
-  </div>
 </main>
 <dialog id="calcdlg" class="calcdlg" aria-labelledby="calctitle">
   <h3 id="calctitle">計算チャンネルを作る</h3>

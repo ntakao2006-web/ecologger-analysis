@@ -1,11 +1,15 @@
 // コース図（自前の canvas）。選んだ周の走った線、コントロールライン・セクターの線、カーソルの位置の点。
 // 図を押すと、基準の周のいちばん近い所へグラフのカーソルを動かす。線を直すときは、押した所へ線を置く。
 // 座標は、重ね合わせの返事の origin（基準の周の頭の位置）を原点にした m（東が x、北が y）。
+// 航空写真（国土地理院のタイル）を下に敷ける。タイルは裏の /tiles/gsi/ から読み（裏が手元に残す）、
+// 四隅を同じ座標へ直して置く（コースの広さなら、平面に直した誤差は1 mより小さい）。
 'use strict';
 
 const CourseMap = (() => {
   const M = 111320.0, PAD = 16;
   let cv = null, data = null, opts = null, view = null, cursor = null, drag = null, moved = false;
+  const tiles = new Map();      // 'z/x/y' → {img, state: 'loading'|'ok'|'ng'}
+  let photoNote = null, pending = false;
 
   function css(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
 
@@ -46,6 +50,69 @@ const CourseMap = (() => {
   function P(x, y, w, h) { const k = scale(w, h); return [w / 2 + (x - view.cx) * k, h / 2 - (y - view.cy) * k]; }
   function U(px, py, w, h) { const k = scale(w, h); return [view.cx + (px - w / 2) / k, view.cy - (py - h / 2) / k]; }
 
+  // ---------------------------------------------------------------- 航空写真
+  const TILE_MAX_Z = 18, TILE_MIN_Z = 2, MAX_TILES = 120;
+  function tileLon(x, z) { return x / 2 ** z * 360 - 180; }
+  function tileLat(y, z) { const n = Math.PI * (1 - 2 * y / 2 ** z); return Math.atan(Math.sinh(n)) * 180 / Math.PI; }
+  function lonTile(lon, z) { return (lon + 180) / 360 * 2 ** z; }
+  function latTile(lat, z) { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z; }
+  function later() { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; draw(); }); }
+  function tile(z, x, y) {
+    const key = `${z}/${x}/${y}`;
+    let t = tiles.get(key);
+    if (!t) {
+      const img = new Image();
+      t = { img, state: 'loading' };
+      img.onload = () => { t.state = 'ok'; later(); };
+      img.onerror = () => { t.state = 'ng'; later(); };
+      img.src = `/tiles/gsi/${key}.jpg`;
+      tiles.set(key, t);
+      if (tiles.size > 1500) tiles.delete(tiles.keys().next().value);     // 古いものから忘れる
+    }
+    return t;
+  }
+  // タイル (z, x, y) の範囲を、図の上の四角 [左, 上, 幅, 高さ] に
+  function tileRect(z, x, y, w, h) {
+    const [ax, ay] = P(...toXY(tileLat(y, z), tileLon(x, z)), w, h);
+    const [bx, by] = P(...toXY(tileLat(y + 1, z), tileLon(x + 1, z)), w, h);
+    return [ax, ay, bx - ax, by - ay];
+  }
+  function drawPhoto(g, w, h) {
+    const dpr = window.devicePixelRatio || 1, k = scale(w, h), lat0 = data.origin[0];
+    // 写真の1画素が画面の1画素くらいになるズーム（256画素のタイル）
+    let z = Math.ceil(Math.log2(156543.03392 * Math.cos(lat0 * Math.PI / 180) * k * dpr));
+    z = Math.max(TILE_MIN_Z, Math.min(TILE_MAX_Z, z));
+    const [lat1, lon1] = toLatLon(...U(0, 0, w, h)), [lat2, lon2] = toLatLon(...U(w, h, w, h));
+    let x0, x1, y0, y1;
+    for (;;) {
+      x0 = Math.floor(lonTile(lon1, z)); x1 = Math.floor(lonTile(lon2, z));
+      y0 = Math.floor(latTile(lat1, z)); y1 = Math.floor(latTile(lat2, z));
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) <= MAX_TILES || z <= TILE_MIN_Z) break;
+      z--;
+    }
+    let ok = 0, ng = 0;
+    g.imageSmoothingQuality = 'high';
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        const t = tile(z, x, y), [rx, ry, rw, rh] = tileRect(z, x, y, w, h);
+        if (t.state === 'ok') { g.drawImage(t.img, rx, ry, rw + 0.5, rh + 0.5); ok++; continue; }
+        if (t.state === 'ng') ng++;
+        // 読めるまでは、手元にある粗いタイルの一部を引き伸ばして出す
+        for (let d = 1; d <= 4 && z - d >= TILE_MIN_Z; d++) {
+          const p = tiles.get(`${z - d}/${x >> d}/${y >> d}`);
+          if (!p || p.state !== 'ok') continue;
+          const n = 2 ** d, sw = 256 / n, sx = (x - ((x >> d) << d)) * sw, sy = (y - ((y >> d) << d)) * sw;
+          g.drawImage(p.img, sx, sy, sw, sw, rx, ry, rw + 0.5, rh + 0.5);
+          break;
+        }
+      }
+    }
+    // 線が見えるよう、写真を少し暗くする
+    g.fillStyle = 'rgba(0, 0, 0, 0.28)';
+    g.fillRect(0, 0, w, h);
+    photoNote = ok === 0 && ng > 0 ? '航空写真を読めません（初めて見る所はネットが要ります）' : null;
+  }
+
   // 線（中心・向き・幅）の両端
   function ends(line) {
     const [cx, cy] = toXY(line.lat, line.lon);
@@ -74,7 +141,7 @@ const CourseMap = (() => {
     const [cx, cy] = P(c[0], c[1], w, h);
     g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + dir[0] * 12, cy - dir[1] * 12); g.stroke();
     if (label) {
-      g.fillStyle = css('--text'); g.font = '11px "Yu Gothic UI", "Segoe UI", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle';
+      g.fillStyle = color === css('--muted') || color === css('--text') ? css('--text') : color; g.font = '11px "Yu Gothic UI", "Segoe UI", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle';
       g.fillText(label, bx + 4, by);
     }
   }
@@ -88,11 +155,13 @@ const CourseMap = (() => {
       g.fillText('基準の周の測位が足りないので、コース図を描けません', w / 2, h / 2);
       return;
     }
+    const photo = !!(opts.photo && opts.photo());
+    if (photo) drawPhoto(g, w, h);
     // 周の線（基準の周を最後に描いて上に出す）
     const order = data.laps.slice().sort((a, b) => (a.ref ? 1 : 0) - (b.ref ? 1 : 0));
     for (const lap of order) {
       if (!lap.track) continue;
-      g.strokeStyle = opts.color(lap.key); g.lineWidth = lap.ref ? 2 : 1.5; g.lineJoin = 'round';
+      g.lineJoin = 'round';
       g.beginPath();
       let pen = false;
       for (let i = 0; i < lap.track.x.length; i++) {
@@ -101,12 +170,17 @@ const CourseMap = (() => {
         const [px, py] = P(x, y, w, h);
         if (pen) g.lineTo(px, py); else { g.moveTo(px, py); pen = true; }
       }
-      g.stroke();
+      const lw = lap.ref ? 2 : 1.5;
+      if (photo) { g.strokeStyle = 'rgba(0, 0, 0, 0.55)'; g.lineWidth = lw + 2.5; g.stroke(); }   // 写真の上では縁取る
+      g.strokeStyle = opts.color(lap.key); g.lineWidth = lw; g.stroke();
     }
     // 線
     const L = opts.lines();
-    if (L && L.line) drawLine(g, L.line, w, h, css('--text'), 2.5, 'コントロールライン', L.draft);
-    (L && L.sectors || []).forEach((s, i) => drawLine(g, s, w, h, css('--muted'), 2, `S${i + 1}｜S${i + 2}`, L.draft));
+    const ink = photo ? '#ffffff' : css('--text'), ink2 = photo ? '#e5e7eb' : css('--muted');
+    if (photo) { g.shadowColor = 'rgba(0, 0, 0, 0.9)'; g.shadowBlur = 3; }
+    if (L && L.line) drawLine(g, L.line, w, h, ink, 2.5, 'コントロールライン', L.draft);
+    (L && L.sectors || []).forEach((s, i) => drawLine(g, s, w, h, ink2, 2, `S${i + 1}｜S${i + 2}`, L.draft));
+    g.shadowBlur = 0; g.shadowColor = 'transparent';
     if (L && L.selected !== null && L.selected !== undefined) {
       const sel = L.selected === 0 ? L.line : L.sectors[L.selected - 1];
       if (sel) drawLine(g, sel, w, h, css('--accent'), 3.5, null, true);
@@ -125,10 +199,18 @@ const CourseMap = (() => {
     }
     // 縮尺
     const k = scale(w, h), m = [10, 20, 50, 100, 200, 500, 1000].find((v) => v * k >= 60) || 1000;
-    g.strokeStyle = css('--muted'); g.fillStyle = css('--muted'); g.lineWidth = 2;
+    g.strokeStyle = photo ? '#ffffff' : css('--muted'); g.fillStyle = g.strokeStyle; g.lineWidth = 2;
     g.beginPath(); g.moveTo(PAD, h - PAD); g.lineTo(PAD + m * k, h - PAD); g.stroke();
     g.font = '11px "Yu Gothic UI", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'bottom';
     g.fillText(m >= 1000 ? `${m / 1000}km` : `${m}m`, PAD, h - PAD - 4);
+    // 写真の出典（地理院タイルの決まり）と、読めないときの知らせ
+    if (photo) {
+      g.font = '10px "Yu Gothic UI", sans-serif'; g.textAlign = 'right'; g.textBaseline = 'bottom';
+      const src = '出典：国土地理院', tw = g.measureText(src).width;
+      g.fillStyle = 'rgba(0, 0, 0, 0.55)'; g.fillRect(w - tw - 10, h - 17, tw + 10, 17);
+      g.fillStyle = '#ffffff'; g.fillText(src, w - 5, h - 3);
+      if (photoNote) { g.textAlign = 'center'; g.textBaseline = 'top'; g.font = '12px "Yu Gothic UI", sans-serif'; g.fillStyle = '#fde68a'; g.fillText(photoNote, w / 2, 8); }
+    }
   }
 
   // 基準の周で、押した所にいちばん近い点（と、そこでの進む向き）
@@ -185,7 +267,7 @@ const CourseMap = (() => {
   }
 
   return {
-    // o：{x() 'dist'|'time', color(key), lines() {line, sectors, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing})}
+    // o：{x() 'dist'|'time', color(key), lines() {line, sectors, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか}
     init(canvas, o) { cv = canvas; opts = o; bind(); },
     show(d, keepView) { const same = data && d && data.origin && d.origin && data.origin[0] === d.origin[0] && data.origin[1] === d.origin[1]; data = d; if (!(keepView && same && view)) fit(); draw(); },
     setCursor(x) { cursor = x; draw(); },

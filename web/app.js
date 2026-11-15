@@ -561,8 +561,11 @@ new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 CourseMap.init($('mapcv'), {
   x: () => state.x, color: colorFor, lines: mapLines, editing: () => !!state.draft,
   onPick: (v) => { Chart.pin(v); CourseMap.setCursor(v); VideoPane.cursor(v, 'pin'); },
-  onPlace: placeLine,
+  onPlace: placeLine, photo: () => $('photo').checked,
 });
+// 航空写真を敷くか（ふだんは敷く。選び直しは覚える）
+try { $('photo').checked = localStorage.getItem('photo') !== '0'; } catch (e) { $('photo').checked = true; }
+$('photo').onchange = () => { try { localStorage.setItem('photo', $('photo').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } CourseMap.redraw(); };
 new ResizeObserver(() => CourseMap.redraw()).observe($('mapcv'));
 VideoPane.init($('vbox'), {
   x: () => state.x, color: colorFor, rate: () => +$('vrate').value,

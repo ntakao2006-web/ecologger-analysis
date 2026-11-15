@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from . import __version__, formula, laps, lines, overlay, session
+from . import __version__, formula, laps, lines, overlay, session, tiles
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 HOME = Path.home() / '.ecologger-analysis'
@@ -32,6 +32,7 @@ CHUNK = 1 << 20
 MAX_RANGE = 8 << 20     # 途中から読む頼みに一度で返す上限。終わりを書かない頼み（bytes=N-）に残り全部を流し続けると、
                         # 画面がつながりを握ったまま読まなくなり、早送り・巻き戻しが止まる（Chromiumで確かめた）
 MEDIA = re.compile(r'^/media/(s\d+)/(\d+)$')
+TILE = re.compile(r'^/tiles/gsi/(\d{1,2})/(\d{1,6})/(\d{1,6})\.jpg$')
 RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
 mimetypes.add_type('text/javascript', '.js')
 mimetypes.add_type('video/mp4', '.mp4')
@@ -61,6 +62,7 @@ class Store:
         self.last_seen = None       # 画面から最後に知らせがあった時刻
         self.lines = lines.Lines(self.home / 'lines.json')
         self.formulas = formula.Formulas(self.home / 'channels.json')
+        self.tiles = tiles.Tiles(self.home)
 
     @property
     def cache(self):
@@ -388,6 +390,9 @@ class Handler(BaseHTTPRequestHandler):
         m = MEDIA.match(path)
         if m:
             return self._media(m.group(1), int(m.group(2)))
+        m = TILE.match(path)
+        if m:
+            return self._tile(*(int(v) for v in m.groups()))
         rel = 'index.html' if path in ('', '/') else path.lstrip('/')
         f = (WEB / rel).resolve()
         if WEB not in f.parents or not f.is_file():      # web/ の外は出さない
@@ -396,6 +401,19 @@ class Handler(BaseHTTPRequestHandler):
         if ctype.startswith('text/') or ctype.endswith('javascript'):
             ctype += '; charset=utf-8'
         self._send(200, f.read_bytes(), ctype)
+
+    def _tile(self, z, x, y):
+        """航空写真のタイル。<img> は見出しを付けられないので、Host だけ見る（tiles.py）"""
+        state, body = self.store.tiles.get(z, x, y)
+        if state != 'ok':
+            code = {'bad': 400, 'none': 404}.get(state, 503)
+            return self._send(code, state.encode('ascii'), 'text/plain; charset=utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/jpeg')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'max-age=86400')
+        self.end_headers()
+        self.wfile.write(body)
 
     def _media(self, sid, idx):
         """動画を渡す。<video> は見出しを付けられないので、Host だけ見る。開いている走行の動画だけを出す。
