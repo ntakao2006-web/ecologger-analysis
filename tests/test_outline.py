@@ -226,6 +226,21 @@ class OutlineTest(unittest.TestCase):
         self.assertGreater(np.ptp(a), 0.4)                       # ゼブラのほとんどの長さを覆う
         self.assertEqual(outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch).build(la, lo)['kerbs'], [])
 
+    def test_measured_again_from_the_middle(self):
+        # 走行ラインが内の縁に触れて少しまたぐ（クリップ）。内の縁は途中で 19 m 途切れ、その奥に別の道の縁がある
+        a = np.linspace(0, 2 * math.pi, 1200, endpoint=False)
+        r = 100.0 - 6.3 * np.maximum(0.0, np.cos(a - 1.0)) ** 8          # a=1 で 93.7 m（縁 94 m の 0.3 m 内）
+        la, lo = to_latlon(r * np.cos(a), r * np.sin(a))
+        self.edge_lines = [circle(R_IN, -1.0, 2.0), circle(R_IN, 2.2, 2 * math.pi - 1.0), circle(R_OUT), circle(80.0, 1.9, 2.3)]
+        o = outline.Outlines(self.tmp.name, Photos(offline=True), fetch=self.fetch)    # 写真には頼らない
+        out = o.build(la, lo)
+        rs = self.radii(out)
+        inner = [x for x in rs if np.median(x) < R_CAR]
+        self.assertEqual(len(inner), 1)                                   # 切れずに1本
+        self.assertLess(np.max(np.abs(inner[0] - R_IN)), 0.5)             # 別の道の縁（80 m）を拾わない
+        self.assertGreater(len(inner[0]), 0.97 * 2 * math.pi * R_IN / outline.STEP_M)
+        self.assertGreater(out['share']['filled'], 0.0)
+
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
         with self.assertRaises(outline.OutlineError):

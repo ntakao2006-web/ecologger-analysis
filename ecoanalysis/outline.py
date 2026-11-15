@@ -32,7 +32,7 @@ import numpy as np
 
 from . import __version__, mvt
 
-VERSION = 2                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した
+VERSION = 3                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す
 BV_URL = 'https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'
 BV_Z = 16                       # 道路縁（縮尺 1/2500 の元）が入っている細かさ
 PHOTO_Z = 18
@@ -50,6 +50,12 @@ USED_SLACK_M = 1.5              # 走った幅よりこれだけ内側までは�
 EDGE_CODES = range(2200, 2300)  # 道路縁（2201 真幅道路 など）。27xx は道路の中心線なので使わない
 EDGE_LEVEL = '2500'
 M_PER_DEG = 111320.0
+CENTER_WIN = 41                         # 真ん中の線：半分の幅をこの横断面の数（×2 m）の中央値と比べる（FILL_GAP の倍より長く）
+CENTER_TOL_M = 2.0                      # 半分の幅がそこからこれだけ外れた所は、片側が別の縁を拾ったとみなす
+CENTER_SMOOTH = 9                       # 真ん中の線のならし（横断面の数）
+FILL_TOL_M = 3.0                        # 2回目：縁は半分の幅からこれだけの内に探す（外は別の道の縁）
+FILL_GAP = 20                           # 2回目：抜けがこの横断面の数（×2 m）までなら補う
+MIN_PIECE = 5                           # 2回目：これより短い切れ端は捨てる
 KERB_IN_M, KERB_OUT_M = 3.0, 4.0        # ゼブラ（赤白の縁石）を、縁から内へ・外へこれだけの幅で探す
 KERB_ALONG_M = 2.0                      # 走る向きに前後これだけの幅で見る（赤と白が1 mほどで交互に並ぶ）
 KERB_ALONG_STEP_M = 0.5
@@ -294,12 +300,14 @@ class Outlines:
 
     # ---- 横断面
     @staticmethod
-    def ray_hits(gx, gy, nx, ny, tx, ty, segs, tmin=None):
+    def ray_hits(gx, gy, nx, ny, tx, ty, segs, tmin=None, tmax=None):
         """各点から ±法線の向きへ伸ばした線が、tmin (n, 2) より外で最初に当たる道路縁までの距離 (n, 2)（左, 右）。
         当たらなければ NaN"""
         out = np.full((len(gx), 2), np.nan)
         if tmin is None:
             tmin = np.zeros((len(gx), 2))
+        if tmax is None:
+            tmax = np.full((len(gx), 2), REACH_M)
         if not len(segs):
             return out
         ax, ay, bx, by = segs.T
@@ -322,7 +330,7 @@ class Outlines:
                 with np.errstate(divide='ignore', invalid='ignore'):
                     t = ((ax[None, :] - ox) * ey[None, :] - (ay[None, :] - oy) * ex[None, :]) / den
                     u = ((ax[None, :] - ox) * dy - (ay[None, :] - oy) * dx) / den
-                hit = use & (np.abs(den) > 1e-9) & (t >= tmin[sl, side, None]) & (t <= REACH_M) & (u >= 0) & (u <= 1)
+                hit = use & (np.abs(den) > 1e-9) & (t >= tmin[sl, side, None]) & (t <= tmax[sl, side, None]) & (u >= 0) & (u <= 1)
                 t = np.where(hit, t, np.inf)
                 m = t.min(axis=1)
                 out[sl, side] = np.where(np.isfinite(m), m, np.nan)
@@ -414,7 +422,7 @@ class Outlines:
                 out[:, side, k] = np.where(np.isfinite(v), np.where(np.isfinite(m), m, v), np.nan)
         return out
 
-    def photo_edges(self, origin, gx, gy, nx, ny, need, tmin=None):
+    def photo_edges(self, origin, gx, gy, nx, ny, need, tmin=None, tmax=None):
         """need (n, 2) が True の横断面だけ、航空写真で tmin より外の舗装の切れ目までの距離を探す。
         (距離 (n, 2), 写真を全部読めたか)"""
         out = np.full(need.shape, np.nan)
@@ -440,6 +448,8 @@ class Outlines:
         d = np.where((first >= 0), r[np.maximum(first, 0)], np.nan)
         d = np.where((first < 0) | ~known[np.arange(len(first)), np.maximum(first, 0)], np.nan, d)
         d[(first < 0) & ~all_known] = np.nan
+        if tmax is not None:
+            d[d > tmax[idx[:, 0], idx[:, 1]]] = np.nan
         out[idx[:, 0], idx[:, 1]] = d
         return out, complete
 
@@ -489,16 +499,11 @@ class Outlines:
             out[i, 1] = max(0.0, -float(np.percentile(passes, 100 - USED_Q)))
         return out
 
-    def build(self, lat, lon, t_all=None, lat_all=None, lon_all=None):
-        """lat・lon：案内にする周。t_all・lat_all・lon_all：走行の全部の測位（縁がコースの中を通っていないかを見る）"""
-        self._pcache = {}
-        origin, gx, gy, nx, ny = guide(lat, lon)
+    def measure(self, origin, gx, gy, nx, ny, segs, tmin, tmax=None):
+        """横断面ごとの左右の縁までの距離 (n, 2) と、どこから取ったか (n, 2)（1 地図・2 写真・0 無し）、写真を全部読めたか"""
         tx, ty = ny, -nx                    # 走る向き（左向きの法線を右へ90°）
-        segs, ok_v = self.edges(origin, gx, gy)
-        used = self.used_width(origin, gx, gy, nx, ny, t_all, lat_all, lon_all)
-        tmin = np.maximum(used - USED_SLACK_M, 0.0)
-        d_gsi = self.ray_hits(gx, gy, nx, ny, tx, ty, segs, tmin)
-        d_photo, ok_p = self.photo_edges(origin, gx, gy, nx, ny, np.isnan(d_gsi), tmin)
+        d_gsi = self.ray_hits(gx, gy, nx, ny, tx, ty, segs, tmin, tmax)
+        d_photo, ok_p = self.photo_edges(origin, gx, gy, nx, ny, np.isnan(d_gsi), tmin, tmax)
         src = np.where(np.isfinite(d_gsi), 1, np.where(np.isfinite(d_photo), 2, 0))
         d = np.where(src == 1, d_gsi, d_photo)
         for side in (0, 1):
@@ -510,6 +515,79 @@ class Outlines:
             sm = _nanmean_circular(_median_circular(v, 11), 5)
             v = np.where(ph & np.isfinite(v) & np.isfinite(sm), sm, v)
             d[:, side] = v
+        return d, src, ok_p
+
+    @staticmethod
+    def center(gx, gy, nx, ny, d):
+        """1回目の縁から、コースの真ん中の線 (x, y) と、そこから縁までの半分の幅のならした値 (n,)。無理なら None。
+        走行ラインは縁に触れたり（クリップ）測位のずれで縁の外へ出たりするので、2回目は真ん中から測る"""
+        n = len(gx)
+        both = np.isfinite(d[:, 0]) & np.isfinite(d[:, 1])
+        half = np.where(both, (d[:, 0] + d[:, 1]) / 2, np.nan)
+        ok = both & (np.abs(half - _median_circular(half, CENTER_WIN)) < CENTER_TOL_M)   # 片側が別の縁を拾った所は使わない
+        good = np.flatnonzero(ok)
+        if len(good) < n * 0.3:
+            return None
+        i = np.arange(n)
+        xp = np.r_[good - n, good, good + n]
+
+        def spread(v):                  # 抜けは輪として線形に補う
+            return np.interp(i, xp, np.tile(v[good], 3))
+        off = _smooth_circular(spread((d[:, 0] - d[:, 1]) / 2), CENTER_SMOOTH)
+        ref = spread(_median_circular(np.where(ok, half, np.nan), CENTER_WIN))
+        return gx + nx * off, gy + ny * off, ref
+
+    @staticmethod
+    def fill(d, ref):
+        """2回目の縁の、外れの捨て・短い切れ端を捨てる・抜けの補い。ref：半分の幅のならした値 (n,)"""
+        n = len(d)
+        out = d.copy()
+        for side in (0, 1):
+            v = out[:, side]
+            v[np.abs(v - ref) > FILL_TOL_M] = np.nan        # 半分の幅から大きく外れた所（別の道の縁）
+            for run in _runs(np.isfinite(v)):               # 短い切れ端は捨てる
+                if len(run) < MIN_PIECE:
+                    v[run] = np.nan
+            for run in _runs(~np.isfinite(v)):              # FILL_GAP 個までの抜けは、両端が近ければ線形に補う
+                if len(run) > FILL_GAP or len(run) == n:
+                    continue
+                a, b = (run[0] - 1) % n, (run[-1] + 1) % n
+                if abs(v[a] - v[b]) > JUMP_M:
+                    continue
+                w = (np.arange(len(run)) + 1) / (len(run) + 1)
+                v[run] = v[a] + (v[b] - v[a]) * w
+            out[:, side] = v
+        return out
+
+    def build(self, lat, lon, t_all=None, lat_all=None, lon_all=None):
+        """lat・lon：案内にする周。t_all・lat_all・lon_all：走行の全部の測位（縁がコースの中を通っていないかを見る）。
+        1回目は案内の周の線から縁を測り、そこからコースの真ん中の線を出して、2回目は真ん中から測り直す"""
+        self._pcache = {}
+        origin, gx, gy, nx, ny = guide(lat, lon)
+        segs, ok_v = self.edges(origin, gx, gy)
+        used = self.used_width(origin, gx, gy, nx, ny, t_all, lat_all, lon_all)
+        d, src, ok_p = self.measure(origin, gx, gy, nx, ny, segs, np.maximum(used - USED_SLACK_M, 0.0))
+        c = self.center(gx, gy, nx, ny, d)
+        if c is not None:
+            cx, cy, ref0 = c
+            lat0, lon0 = origin
+            kx = M_PER_DEG * math.cos(math.radians(lat0))
+            origin2, gx2, gy2, nx2, ny2 = guide(lat0 + cy / M_PER_DEG, lon0 + cx / kx)
+            # 1回目の半分の幅を、2回目の点へ近いものから写す
+            dx = (origin2[1] - lon0) * kx
+            dy = (origin2[0] - lat0) * M_PER_DEG
+            near = np.array([int(np.argmin((cx - x - dx) ** 2 + (cy - y - dy) ** 2)) for x, y in zip(gx2, gy2)])
+            ref = ref0[near]
+            used2 = self.used_width(origin2, gx2, gy2, nx2, ny2, t_all, lat_all, lon_all)
+            lo = np.maximum(np.maximum(used2 - USED_SLACK_M, 0.0), np.maximum(ref - FILL_TOL_M, 0.0)[:, None])
+            hi = np.repeat((ref + FILL_TOL_M)[:, None], 2, axis=1)
+            segs2, ok_v2 = self.edges(origin2, gx2, gy2)
+            d2, src2, ok_p2 = self.measure(origin2, gx2, gy2, nx2, ny2, segs2, lo, hi)
+            d2 = self.fill(d2, ref)
+            src2 = np.where(np.isfinite(d2) & (src2 == 0), 3, np.where(np.isfinite(d2), src2, 0))   # 3：補った所
+            origin, gx, gy, nx, ny, d, src = origin2, gx2, gy2, nx2, ny2, d2, src2
+            ok_v, ok_p = ok_v and ok_v2, ok_p and ok_p2
+        tx, ty = ny, -nx
         lat0, lon0 = origin
         kx = M_PER_DEG * math.cos(math.radians(lat0))
         lines = []
@@ -539,7 +617,7 @@ class Outlines:
                     lines.append([[round(float(pts[i, 0]), 7), round(float(pts[i, 1]), 7)] for i in rr])
         n = src.size
         share = {'gsi': round(float((src == 1).sum()) / n, 3), 'photo': round(float((src == 2).sum()) / n, 3),
-                 'none': round(float((src == 0).sum()) / n, 3)}
+                 'filled': round(float((src == 3).sum()) / n, 3), 'none': round(float((src == 0).sum()) / n, 3)}
         width = d[:, 0] + d[:, 1]
         kb = self.kerbs(origin, gx, gy, nx, ny, tx, ty, d)
         self._pcache = {}
