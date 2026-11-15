@@ -112,15 +112,18 @@ const CourseMap = (() => {
     const dpr = window.devicePixelRatio || 1, k = scale(w, h), lat0 = data.origin[0];
     // 写真の1画素が画面の1画素くらいになるズーム（256画素のタイル）
     let z = Math.ceil(Math.log2(156543.03392 * Math.cos(lat0 * Math.PI / 180) * k * dpr));
+    // 倍率が数でないとき（図が描けないほど小さい）は敷かない。NaN のまま下へ進むと、比べがいつも偽になって z-- が終わらない
+    if (!Number.isFinite(z)) return;
     z = Math.max(TILE_MIN_Z, Math.min(TILE_MAX_Z, z));
     const [lat1, lon1] = toLatLon(...U(0, 0, w, h)), [lat2, lon2] = toLatLon(...U(w, h, w, h));
     let x0, x1, y0, y1;
     for (;;) {
       x0 = Math.floor(lonTile(lon1, z)); x1 = Math.floor(lonTile(lon2, z));
       y0 = Math.floor(latTile(lat1, z)); y1 = Math.floor(latTile(lat2, z));
-      if ((x1 - x0 + 1) * (y1 - y0 + 1) <= MAX_TILES || z <= TILE_MIN_Z) break;
+      if (!((x1 - x0 + 1) * (y1 - y0 + 1) > MAX_TILES) || z <= TILE_MIN_Z) break;   // 数でない範囲でも抜ける
       z--;
     }
+    if (![x0, x1, y0, y1].every(Number.isFinite)) return;
     let ok = 0, ng = 0;
     g.imageSmoothingQuality = 'high';
     for (let x = x0; x <= x1; x++) {
@@ -530,6 +533,8 @@ const CourseMap = (() => {
     if (!cv || !data) return;
     const [g, w, h] = size();
     g.clearRect(0, 0, w, h);
+    // 枠を寄せて図が余白（PAD）より小さくなったら描かない（倍率が0や負になり、写真・印の計算が壊れる）。広げれば描き直す
+    if (w - 2 * PAD < 8 || h - 2 * PAD < 8 || !view || !(view.span > 0)) return;
     if (!data.origin) {
       g.fillStyle = css('--muted'); g.font = '12px "Yu Gothic UI", sans-serif'; g.textAlign = 'center';
       g.fillText('基準の周の測位が足りないので、コース図を描けません', w / 2, h / 2);
