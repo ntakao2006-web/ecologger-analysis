@@ -156,7 +156,7 @@ class Store:
             return {'ok': True, 'app': 'ecologger-analysis', 'version': __version__, 'rev': self.rev,
                     'mode': self.mode, 'mode_note': self.mode_note, 'notice': self.notice}
 
-    def overlay(self, picks, mode, channels, ref=None):
+    def overlay(self, picks, mode, channels, ref=None, paint=None, mark='Speed'):
         """picks：[{id, lap}]。mode：'app'（コースの線で切った周）か 'logger'。周が見つからなければ KeyError"""
         items = []
         with self.lock:
@@ -175,7 +175,7 @@ class Store:
 
         def calc(s, rows, names):
             return formula.compute(names, s.channels, s.t, rows, compiled)
-        out = overlay.compare(items, channels, ref, calc)
+        out = overlay.compare(items, channels, ref, calc, paint, mark)
         for item, lap in zip(items, out['laps']):
             lap['video'] = lap_videos(item['sid'], item['session'], item['lap'])
         return out
@@ -487,10 +487,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': False, 'error': f'開けません（{e}）'}, 400)
         if path == '/api/overlay':
             picks, chans, ref = body.get('laps'), body.get('channels') or [], body.get('ref')
-            if not isinstance(picks, list) or not all(isinstance(c, str) for c in chans) or not (ref is None or isinstance(ref, int)):
-                return self._json({'ok': False, 'error': 'laps・channels・ref の形が違う'}, 400)
+            paint, mark = body.get('paint') or None, body.get('mark') or 'Speed'      # コース図の塗り（SP-10-12）
+            if not isinstance(picks, list) or not all(isinstance(c, str) for c in chans) or not (ref is None or isinstance(ref, int)) \
+                    or not (paint is None or isinstance(paint, str) and len(paint) <= 100) or not (isinstance(mark, str) and len(mark) <= 100):
+                return self._json({'ok': False, 'error': 'laps・channels・ref・paint・mark の形が違う'}, 400)
             try:
-                return self._json({'ok': True, **self.store.overlay(picks[:12], body.get('mode', 'app'), chans[:12], ref)})
+                return self._json({'ok': True, **self.store.overlay(picks[:12], body.get('mode', 'app'), chans[:12], ref,
+                                                                    paint, mark)})
             except KeyError as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
         if path.startswith('/api/lines/'):

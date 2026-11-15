@@ -123,6 +123,15 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn('9周目が無い', j['error'])
         self.assertEqual(self.api('overlay', {'laps': 'x'})[0], 400)
+        # コース図の塗り（SP-10-12）：塗るチャンネルの値と印が返る。形の違う paint・mark は断る
+        code, j = self.api('overlay', {'laps': [{'id': sid, 'lap': 1}, {'id': sid, 'lap': 2}], 'channels': [],
+                                       'paint': 'Speed', 'mark': 'RPM'})
+        self.assertEqual(code, 200, j)
+        self.assertEqual((j['paint'], j['mark']), ('Speed', 'RPM'))
+        self.assertEqual(len(j['laps'][0]['track']['v']), len(j['laps'][0]['track']['x']))
+        self.assertTrue(any(m['k'] == 'on' for m in j['laps'][0]['marks']))
+        self.assertEqual(self.api('overlay', {'laps': [], 'paint': 3})[0], 400)
+        self.assertEqual(self.api('overlay', {'laps': [], 'mark': ['x']})[0], 400)
         self.api('close', {'id': sid})
 
     def with_video(self, name):

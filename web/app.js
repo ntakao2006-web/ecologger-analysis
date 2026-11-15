@@ -6,6 +6,9 @@ const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
 const DEFAULT_CHANNELS = ['Speed', 'Throttle', 'RPM', 'LongAccel', 'LatAccel'];
 try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
+// コース図の塗り（SP-10-12）。ranges は塗り方・チャンネルごとに手で決めた段の範囲 [低, 高]（null は自動）
+state.paint = { mode: 'lap', ch: 'Speed', dotted: false, acc: false, marks: false, markCh: 'Speed', ranges: {} };
+try { const p = JSON.parse(localStorage.getItem('mappaint') || 'null'); if (p && typeof p === 'object') Object.assign(state.paint, p); } catch (e) { /* 覚えていなくてよい */ }
 const $ = (id) => document.getElementById(id);
 
 async function api(path, body) {
@@ -214,6 +217,54 @@ function setChannels(list) {
   try { localStorage.setItem('channels', JSON.stringify(state.channels)); } catch (e) { /* 覚えなくてよい */ }
 }
 
+// ---------------------------------------------------------------- コース図の塗り
+function savePaint() { try { localStorage.setItem('mappaint', JSON.stringify(state.paint)); } catch (e) { /* 覚えなくてよい */ } }
+function rangeKey() { const p = state.paint; return p.mode === 'value' ? `value:${p.ch}` : p.mode; }
+function numberChannels(meta) { return [...meta.values()].filter((c) => c.kind === 'number'); }
+
+function renderPaintControls(meta) {
+  const p = state.paint, nums = numberChannels(meta);
+  const fill = (sel, value) => {
+    sel.textContent = '';
+    for (const c of nums) sel.append(el('option', { value: c.name }, `${c.label || c.name}${c.unit ? `（${c.unit}）` : ''}`));
+    if (!nums.some((c) => c.name === value) && nums.length) value = nums.some((c) => c.name === 'Speed') ? 'Speed' : nums[0].name;
+    sel.value = value;
+    return value;
+  };
+  if (meta.size) { p.ch = fill($('paintch'), p.ch); p.markCh = fill($('markch'), p.markCh); }
+  $('paintsel').value = p.mode;
+  $('paintch').hidden = p.mode !== 'value';
+  $('paintrange').hidden = p.mode === 'lap';
+  $('markch').hidden = !p.marks;
+  $('decdot').checked = p.dotted; $('accring').checked = p.acc; $('markson').checked = p.marks;
+  const r = p.ranges[rangeKey()] || [null, null];
+  $('paintlo').value = r[0] === null ? '' : r[0];
+  $('painthi').value = r[1] === null ? '' : r[1];
+}
+
+// 自動の段の範囲を、入れ欄の見本に出す
+function showAutoRange() {
+  const r = CourseMap.paintRange(), d = state.paint.mode === 'value' ? 1 : 3;
+  $('paintlo').placeholder = r ? `自動 ${r[0].toFixed(d)}` : '自動';
+  $('painthi').placeholder = r ? `自動 ${r[1].toFixed(d)}` : '自動';
+}
+
+function paintForMap() {
+  const p = state.paint, meta = state.meta || new Map(), c = meta.get(p.ch), mc = meta.get(p.markCh);
+  const r = p.ranges[rangeKey()] || [null, null];
+  return { mode: p.mode, ch: p.ch, chLabel: c ? c.label || c.name : p.ch, unit: c ? c.unit : '', lo: r[0], hi: r[1],
+           dotted: p.dotted, acc: p.acc, marks: p.marks, markLabel: mc ? mc.label || mc.name : p.markCh, markUnit: mc ? mc.unit : '' };
+}
+
+// 塗りを変えたとき：裏に頼み直しが要る（塗る値・印のチャンネルが変わった）なら頼み直す。要らなければ描き直すだけ
+function paintChanged() {
+  savePaint();
+  if (state.meta) renderPaintControls(state.meta);
+  const j = state.overlay, want = state.paint.mode === 'value' ? state.paint.ch : null;
+  if (j && (want && j.paint !== want || j.mark !== state.paint.markCh)) { renderPicked(); return; }
+  CourseMap.redraw(); showAutoRange();
+}
+
 function renderRefList(picks) {
   const sel = $('refsel');
   sel.textContent = '';
@@ -246,14 +297,17 @@ async function renderPicked() {
     $('legend').textContent = ''; renderRefList([]); $('chanlist').textContent = ''; renderLineControls(); return;
   }
   const meta = channelMeta(picks);
+  state.meta = meta;
   renderChannelList(meta);
   renderRefList(picks);
+  renderPaintControls(meta);
   const ref = state.ref ? picks.findIndex((p) => p.key === state.ref) : null;
   const req = ++state.req;
   let j;
   try {
     j = await api('overlay', { laps: picks.map((p) => ({ id: p.id, lap: p.lap })), mode: state.mode,
-                               channels: state.channels.filter((n) => meta.has(n)), ref: ref === null || ref < 0 ? null : ref });
+                               channels: state.channels.filter((n) => meta.has(n)), ref: ref === null || ref < 0 ? null : ref,
+                               paint: state.paint.mode === 'value' ? state.paint.ch : null, mark: state.paint.markCh });
   } catch (e) { status('裏の処理とつながっていません', 'ng'); return; }
   if (req !== state.req) return;                  // 新しい頼みが後から出ている
   if (!j.ok) { status(j.error, 'ng'); return; }
@@ -266,6 +320,7 @@ async function renderPicked() {
                               onCursor: (v, kind) => { CourseMap.setCursor(v); VideoPane.cursor(v, kind); } }, true);
   CourseMap.show(j, true);
   CourseMap.setCursor(Chart.cursor());
+  showAutoRange();
   showVideo(VideoPane.show(j));
   VideoPane.cursor(Chart.cursor(), 'pin');
   renderLineControls();
@@ -561,8 +616,22 @@ new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 CourseMap.init($('mapcv'), {
   x: () => state.x, color: colorFor, lines: mapLines, editing: () => !!state.draft,
   onPick: (v) => { Chart.pin(v); CourseMap.setCursor(v); VideoPane.cursor(v, 'pin'); },
-  onPlace: placeLine, photo: () => $('photo').checked,
+  onPlace: placeLine, photo: () => $('photo').checked, paint: paintForMap,
 });
+$('paintsel').onchange = (e) => { state.paint.mode = e.target.value; paintChanged(); };
+$('paintch').onchange = (e) => { state.paint.ch = e.target.value; paintChanged(); };
+$('markch').onchange = (e) => { state.paint.markCh = e.target.value; paintChanged(); };
+$('decdot').onchange = (e) => { state.paint.dotted = e.target.checked; paintChanged(); };
+$('accring').onchange = (e) => { state.paint.acc = e.target.checked; paintChanged(); };
+$('markson').onchange = (e) => { state.paint.marks = e.target.checked; paintChanged(); };
+for (const id of ['paintlo', 'painthi']) {
+  $(id).onchange = () => {
+    const v = (x) => (x.trim() === '' || !isFinite(+x) ? null : +x);
+    const r = [v($('paintlo').value), v($('painthi').value)];
+    if (r[0] === null && r[1] === null) delete state.paint.ranges[rangeKey()]; else state.paint.ranges[rangeKey()] = r;
+    paintChanged();
+  };
+}
 // 航空写真を敷くか（ふだんは敷く。選び直しは覚える）
 try { $('photo').checked = localStorage.getItem('photo') !== '0'; } catch (e) { $('photo').checked = true; }
 $('photo').onchange = () => { try { localStorage.setItem('photo', $('photo').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } CourseMap.redraw(); };

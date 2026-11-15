@@ -68,6 +68,22 @@
       <span class="grow"></span>
       <button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button>
     </div>
+    <div id="mapopts" class="mapopts">
+      <label class="refpick" title="周の線の色。値は基準の周の線だけを塗り、タイムの差は比べる周（基準の次に選んだ周）の線を塗ります。ほかの周は細く描きます">塗る
+        <select id="paintsel">
+          <option value="lap">周の色</option>
+          <option value="value">値</option>
+          <option value="rate">タイムの差（増え方）</option>
+          <option value="delta">タイムの差（値）</option>
+        </select></label>
+      <select id="paintch" hidden title="塗るチャンネル"></select>
+      <span id="paintrange" class="refpick" hidden title="色の段の範囲。空ならその周の中の 2〜98%。数を入れると固定します（別の周へ移っても同じ色の意味にするため）">範囲
+        <input id="paintlo" type="number" step="any" placeholder="自動"> 〜 <input id="painthi" type="number" step="any" placeholder="自動"></span>
+      <label class="refpick" title="前後Gが −0.1 G より小さい所（減速）を点線にします"><input type="checkbox" id="decdot"> 減速を点線</label>
+      <label class="refpick" title="測位の点ごとに、精度（hacc）の大きさの円を薄く描きます。線のずれが測位のせいか走りのせいかを見分けるため"><input type="checkbox" id="accring"> 測位の精度</label>
+      <label class="refpick" title="周ごとに、ブレーキの踏み始め▼・離した所▲（前後Gから）と、選んだチャンネルのいちばん低い所●・高い所○を置きます"><input type="checkbox" id="markson"> 印</label>
+      <select id="markch" hidden title="いちばん低い所・高い所を拾うチャンネル"></select>
+    </div>
     <div id="lineedit" class="lineedit" hidden>
       <div class="row">直す線 <select id="linetarget"></select>
         幅 <input id="linewidth" type="number" min="5" max="300" step="1"> m
