@@ -156,16 +156,46 @@ const CourseMap = (() => {
   const MARK_NAMES = { on: '▼ ブレーキの踏み始め', off: '▲ ブレーキを離した所', min: '● いちばん低い所', max: '○ いちばん高い所' };
 
   // コース図：道路の縁だけを薄く（周の線がコース幅のどこを通ったかを読むための下地）
+  const ROAD_MIN_PX = 9;           // コース図の道の帯は、引いて見てもこの太さ（画素）より細くしない
+  const ZEBRA_MIN_PX = 5;          // ゼブラも、この太さより細くしない
+  // ゼブラ（赤白の縁石）の塗り：赤の斜めの縞を薄く
+  const zebraFill = {};
+  function zebra(g, photo, dark) {
+    const k = photo ? 'p' : dark ? 'd' : 'l';
+    if (!zebraFill[k]) {
+      const c = document.createElement('canvas'); c.width = c.height = 8;
+      const q = c.getContext('2d');
+      q.fillStyle = photo ? 'rgba(255, 255, 255, 0.4)' : dark ? 'rgba(229, 231, 235, 0.22)' : 'rgba(255, 255, 255, 0.7)';
+      q.fillRect(0, 0, 8, 8);
+      q.strokeStyle = photo ? 'rgba(239, 68, 68, 0.9)' : dark ? 'rgba(248, 113, 113, 0.7)' : 'rgba(220, 38, 38, 0.55)';
+      q.lineWidth = 3;
+      q.beginPath(); q.moveTo(-2, 10); q.lineTo(10, -2); q.moveTo(-2, 2); q.lineTo(2, -2); q.moveTo(6, 10); q.lineTo(10, 6); q.stroke();
+      zebraFill[k] = g.createPattern(c, 'repeat');
+    }
+    return zebraFill[k];
+  }
+
   function drawOutline(g, w, h, photo) {
     if (!outline || !outline.lines) return;
+    const dark = isDark();
+    const path = (pts) => { g.beginPath(); pts.forEach((q, i) => { const [px, py] = P(...toXY(q[0], q[1]), w, h); if (i) g.lineTo(px, py); else g.moveTo(px, py); }); };
     g.save();
     g.lineJoin = 'round'; g.lineCap = 'round';
-    g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.75)' : (isDark() ? '#4b5563' : '#cdd2d9');
-    g.lineWidth = photo ? 1.5 : 3;
-    for (const ln of outline.lines) {
-      g.beginPath();
-      ln.forEach((q, i) => { const [px, py] = P(...toXY(q[0], q[1]), w, h); if (i) g.lineTo(px, py); else g.moveTo(px, py); });
-      g.stroke();
+    if (photo) {                       // 写真の上：暗い縁取りの上に白
+      g.strokeStyle = 'rgba(0, 0, 0, 0.45)'; g.lineWidth = 3.5;
+      for (const ln of outline.lines) { path(ln); g.stroke(); }
+    }
+    // 引いて見るとコースの幅が数画素になり、縁が周の線の下に隠れる。そのときは縁を太らせて道の帯にする
+    const roadPx = ((outline.width_m && outline.width_m[1]) || 12) * scale(w, h);
+    const fat = !photo && roadPx < ROAD_MIN_PX;
+    g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.9)' : fat ? (dark ? '#4b5563' : '#d4d9e0') : (dark ? '#6b7280' : '#a3abb6');
+    g.lineWidth = photo ? 1.5 : fat ? ROAD_MIN_PX - roadPx + 2 : 2;
+    for (const ln of outline.lines) { path(ln); g.stroke(); }
+    if (outline.kerbs && outline.kerbs.length) {
+      // 縁石の幅は1 mほど。細く見えるときは縁取りで太らせて、最低 ZEBRA_MIN_PX の縞にする
+      const fill = zebra(g, photo, dark), pad = ZEBRA_MIN_PX - 1.2 * scale(w, h);
+      g.fillStyle = fill; g.strokeStyle = fill; g.lineWidth = pad;
+      for (const k of outline.kerbs) { path(k); g.closePath(); g.fill(); if (pad > 0) g.stroke(); }
     }
     g.restore();
   }
@@ -554,8 +584,8 @@ const CourseMap = (() => {
       e.preventDefault();
       const r = cv.getBoundingClientRect();
       const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
-      const f = e.deltaY > 0 ? 1.25 : 0.8;
-      view.span = Math.max(20, view.span * f);
+      const span = Math.max(20, view.span * (e.deltaY > 0 ? 1.25 : 0.8)), f = span / view.span;   // 寄りきったら中心も動かさない
+      view.span = span;
       view.cx = x + (view.cx - x) * f; view.cy = y + (view.cy - y) * f;
       draw();
     }, { passive: false });

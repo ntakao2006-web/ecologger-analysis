@@ -9,9 +9,10 @@
    （地図の道路縁には、合流する車線の境目など、コースの中を通る線もあるため。これで見分ける）
 3. 横断面ごとに、走った幅より外で、国土地理院の「地理院地図Vector」（最適化ベクトルタイル）の道路縁に当たれば、その距離を使う。
    測量した線なので確か。走る向きとの角度が EDGE_ANGLE_DEG より大きい縁（交わる道・橋）は見ない
-4. 道路縁が無い所（観客席の側など、地図で道路として描かれていない所）は、航空写真（全国最新写真）の色で、
+4. 縁の近くの航空写真に赤白の画素が並ぶ所を、ゼブラ（縁石）として面で返す（薄く塗るため）
+5. 道路縁が無い所（観客席の側など、地図で道路として描かれていない所）は、航空写真（全国最新写真）の色で、
    灰色の舗装・白線・赤い縁石が途切れる所を探す（草は緑寄り、砂利は赤寄り、木の陰は暗い）
-5. 飛んだ値をならし、緯度経度の線にする。どちらでも見つからない所は線を切る
+6. 飛んだ値をならし、緯度経度の線にする。どちらでも見つからない所は線を切る
 
 - タイルは ~/.ecologger-analysis/tiles/ に残す（写真は tiles.py と同じ置き場）。送るのはタイルの番号だけ
 - できた図はコースごとに ~/.ecologger-analysis/outlines/ に残し、2回目からはすぐ出す
@@ -31,7 +32,7 @@ import numpy as np
 
 from . import __version__, mvt
 
-VERSION = 1                     # 作り方を変えたら上げる（残した図を作り直す）
+VERSION = 2                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した
 BV_URL = 'https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'
 BV_Z = 16                       # 道路縁（縮尺 1/2500 の元）が入っている細かさ
 PHOTO_Z = 18
@@ -49,6 +50,12 @@ USED_SLACK_M = 1.5              # 走った幅よりこれだけ内側までは�
 EDGE_CODES = range(2200, 2300)  # 道路縁（2201 真幅道路 など）。27xx は道路の中心線なので使わない
 EDGE_LEVEL = '2500'
 M_PER_DEG = 111320.0
+KERB_IN_M, KERB_OUT_M = 3.0, 4.0        # ゼブラ（赤白の縁石）を、縁から内へ・外へこれだけの幅で探す
+KERB_ALONG_M = 2.0                      # 走る向きに前後これだけの幅で見る（赤と白が1 mほどで交互に並ぶ）
+KERB_ALONG_STEP_M = 0.5
+KERB_MIN_FLIPS = 2                      # 白と赤みの入れ替わりがこれだけあればゼブラ（白線は入れ替わらない）
+KERB_GAP = 2                            # ゼブラの抜けがこの横断面の数までなら続いているとみなす
+KERB_MIN_RUN = 3                        # ゼブラはこの横断面の数（×2 m）より長く続くものだけ
 TIMEOUT_S = 8
 MAX_BYTES = 2 << 20
 ATTRIBUTION = '国土地理院の地理院地図Vector（道路縁）と航空写真を加工して作成'
@@ -112,6 +119,22 @@ def _median_circular(v, w):
             return np.nanmedian(win, axis=1)[:len(v)]
 
 
+def _runs(flags):
+    """True が続く所の番号のリスト（輪として、頭と終わりをつなぐ）"""
+    runs, cur = [], []
+    for i, f in enumerate(flags):
+        if f:
+            cur.append(i)
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    if len(runs) > 1 and runs[0][0] == 0 and runs[-1][-1] == len(flags) - 1:
+        runs[0] = runs.pop() + runs[0]
+    return runs
+
+
 def guide(lat, lon, closed=True):
     """周の線を STEP_M おきの点にし、ならす。(原点, x, y, 左向きの単位ベクトル nx, ny)"""
     lat, lon = np.asarray(lat, float), np.asarray(lon, float)
@@ -148,6 +171,7 @@ class Outlines:
         self.fetch = fetch
         self.lock = threading.Lock()
         self.memo = {}
+        self._pcache = {}           # 1回の作りのあいだ、読んだ写真を覚える
 
     # ---- 残す・読む
     @staticmethod
@@ -314,6 +338,82 @@ class Outlines:
         grey = (mx - mn < 30) & (mn > 35) & (b - g >= -2) & (r - b <= 4)
         return kerb | white | grey
 
+    def sample(self, origin, px, py):
+        """原点からの m の点（同じ形の配列）の航空写真の色。(rgb (…, 3), 読めたか (…), 全部のタイルを読めたか)"""
+        lat0, lon0 = origin
+        kx = M_PER_DEG * math.cos(math.radians(lat0))
+        X, Y = tile_xy(lat0 + py / M_PER_DEG, lon0 + px / kx, PHOTO_Z)
+        TX, TY = X.astype(np.int64), Y.astype(np.int64)
+        col = np.clip(((X - TX) * 256).astype(np.int64), 0, 255)
+        row = np.clip(((Y - TY) * 256).astype(np.int64), 0, 255)
+        rgb = np.zeros(px.shape + (3,), np.int16)
+        known = np.zeros(px.shape, bool)
+        cache, complete = self._pcache, True
+        keys = TX * (1 << 20) + TY
+        for k in np.unique(keys):
+            m = keys == k
+            arr, ok = self._photo(cache, int(k >> 20), int(k & ((1 << 20) - 1)))
+            complete &= ok
+            if arr is None or arr.shape[0] < 256 or arr.shape[1] < 256:
+                continue
+            rgb[m] = arr[row[m], col[m]]
+            known[m] = True
+        return rgb, known, complete
+
+    @staticmethod
+    def kerb_pixels(rgb):
+        """(白, 赤み)。写真（1画素 0.5 m ほど）では縁石の赤がにじんで、桃色がかった灰色になる"""
+        r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+        mx, mn = np.maximum(np.maximum(r, g), b), np.minimum(np.minimum(r, g), b)
+        white = (mn > 150) & (mx - mn < 40)
+        pink = ~white & (r > 90) & (r - g >= 5) & (b - g >= -3)
+        return white, pink
+
+    def kerbs(self, origin, gx, gy, nx, ny, tx, ty, d):
+        """縁 d (n, 2) の近くのゼブラ（赤白の縁石）。左右それぞれ (内の距離, 外の距離) の配列 (n, 2, 2)（無ければ NaN）。
+        縁に沿って白と赤みが交互に並ぶ所を探す（白線は途切れないので、交互の数で分ける）"""
+        out = np.full((len(gx), 2, 2), np.nan)
+        rr = np.arange(-KERB_IN_M, KERB_OUT_M + 1e-9, RAY_STEP_M)
+        al = np.arange(-KERB_ALONG_M, KERB_ALONG_M + 1e-9, KERB_ALONG_STEP_M)
+        for side, sg in ((0, 1.0), (1, -1.0)):
+            idx = np.flatnonzero(np.isfinite(d[:, side]))
+            if not len(idx):
+                continue
+            base = np.maximum(d[idx, side][:, None] + rr[None, :], 0.0)              # 案内からの距離 (k, r)
+            px = gx[idx, None, None] + tx[idx, None, None] * al[None, None, :] + sg * nx[idx, None, None] * base[:, :, None]
+            py = gy[idx, None, None] + ty[idx, None, None] * al[None, None, :] + sg * ny[idx, None, None] * base[:, :, None]
+            rgb, known, _ok = self.sample(origin, px, py)
+            white, pink = self.kerb_pixels(rgb)
+            white &= known
+            pink &= known
+            flips = (np.diff(white.astype(int), axis=2) != 0).sum(axis=2)          # 縁に沿った白の入れ替わりの数
+            col = (white.sum(axis=2) >= 2) & (pink.sum(axis=2) >= 1) & (flips >= KERB_MIN_FLIPS)
+            for j in np.flatnonzero(col.sum(axis=1) >= 2):
+                c = np.flatnonzero(col[j])
+                # いちばん長く続く列のまとまり（1列の抜けはつなぐ）
+                parts = np.split(c, np.flatnonzero(np.diff(c) > 2) + 1)
+                pc = max(parts, key=len)
+                if len(pc) < 2:
+                    continue
+                out[idx[j], side] = (base[j, pc[0]], base[j, pc[-1]] + RAY_STEP_M)
+        # 続かないもの（1つ2つの横断面だけ）は捨て、1つ抜けた所はつなぐ
+        for side in (0, 1):
+            f = np.isfinite(out[:, side, 0])
+            for run in _runs(~f):                           # 抜けが KERB_GAP 個まではつなぐ
+                if len(run) > KERB_GAP or len(run) == len(f):
+                    continue
+                a, b = out[(run[0] - 1) % len(f), side], out[(run[-1] + 1) % len(f), side]
+                out[run, side] = (a + b) / 2
+            f = np.isfinite(out[:, side, 0])
+            for run in _runs(f):
+                if len(run) < KERB_MIN_RUN:
+                    out[run, side] = np.nan
+            for k in (0, 1):
+                v = out[:, side, k]
+                m = _median_circular(v, 3)
+                out[:, side, k] = np.where(np.isfinite(v), np.where(np.isfinite(m), m, v), np.nan)
+        return out
+
     def photo_edges(self, origin, gx, gy, nx, ny, need, tmin=None):
         """need (n, 2) が True の横断面だけ、航空写真で tmin より外の舗装の切れ目までの距離を探す。
         (距離 (n, 2), 写真を全部読めたか)"""
@@ -327,22 +427,7 @@ class Outlines:
         sg = np.where(idx[:, 1] == 0, 1.0, -1.0)
         px = gx[idx[:, 0], None] + (sg * nx[idx[:, 0]])[:, None] * r[None, :]
         py = gy[idx[:, 0], None] + (sg * ny[idx[:, 0]])[:, None] * r[None, :]
-        X, Y = tile_xy(lat0 + py / M_PER_DEG, lon0 + px / kx, PHOTO_Z)
-        TX, TY = X.astype(np.int64), Y.astype(np.int64)
-        col = np.clip(((X - TX) * 256).astype(np.int64), 0, 255)
-        row = np.clip(((Y - TY) * 256).astype(np.int64), 0, 255)
-        rgb = np.zeros(px.shape + (3,), np.int16)
-        known = np.zeros(px.shape, bool)
-        cache, complete = {}, True
-        keys = TX * (1 << 20) + TY
-        for k in np.unique(keys):
-            m = keys == k
-            arr, ok = self._photo(cache, int(k >> 20), int(k & ((1 << 20) - 1)))
-            complete &= ok
-            if arr is None or arr.shape[0] < 256 or arr.shape[1] < 256:
-                continue
-            rgb[m] = arr[row[m], col[m]]
-            known[m] = True
+        rgb, known, complete = self.sample(origin, px, py)
         off = ~self.paved(rgb) & known
         if tmin is not None:                # 車が走った所までは路面（白い字や影で止まらない）
             off &= r[None, :] >= tmin[idx[:, 0], idx[:, 1]][:, None]
@@ -406,6 +491,7 @@ class Outlines:
 
     def build(self, lat, lon, t_all=None, lat_all=None, lon_all=None):
         """lat・lon：案内にする周。t_all・lat_all・lon_all：走行の全部の測位（縁がコースの中を通っていないかを見る）"""
+        self._pcache = {}
         origin, gx, gy, nx, ny = guide(lat, lon)
         tx, ty = ny, -nx                    # 走る向き（左向きの法線を右へ90°）
         segs, ok_v = self.edges(origin, gx, gy)
@@ -455,6 +541,19 @@ class Outlines:
         share = {'gsi': round(float((src == 1).sum()) / n, 3), 'photo': round(float((src == 2).sum()) / n, 3),
                  'none': round(float((src == 0).sum()) / n, 3)}
         width = d[:, 0] + d[:, 1]
-        return {'version': VERSION, 'lines': lines, 'share': share, 'attribution': ATTRIBUTION,
+        kb = self.kerbs(origin, gx, gy, nx, ny, tx, ty, d)
+        self._pcache = {}
+        kerbs = []
+        for side, sg in ((0, 1.0), (1, -1.0)):
+            for run in _runs(np.isfinite(kb[:, side, 0])):
+                if len(run) < KERB_MIN_RUN:
+                    continue
+                run = np.asarray(run)
+                ri, ro = kb[run, side, 0], kb[run, side, 1]
+                xo, yo = gx[run] + sg * nx[run] * ro, gy[run] + sg * ny[run] * ro
+                xi, yi = gx[run] + sg * nx[run] * ri, gy[run] + sg * ny[run] * ri
+                xs, ys = np.r_[xo, xi[::-1]], np.r_[yo, yi[::-1]]
+                kerbs.append([[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(xs, ys)])
+        return {'version': VERSION, 'lines': lines, 'kerbs': kerbs, 'share': share, 'attribution': ATTRIBUTION,
                 'complete': bool(ok_v and ok_p),
                 'width_m': [round(float(np.nanpercentile(width, q)), 1) for q in (5, 50, 95)] if np.isfinite(width).any() else None}

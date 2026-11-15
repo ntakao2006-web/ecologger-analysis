@@ -70,8 +70,9 @@ def encode_tile(lines, z, X, Y, ftcode=2201, level='2500', ext=4096):
 
 class Photos:
     """航空写真の代わり：半径 R_IN〜R_OUT を灰色の舗装、ほかを草の緑にした JPEG"""
-    def __init__(self, offline=False):
+    def __init__(self, offline=False, kerb=False):
         self.offline = offline
+        self.kerb = kerb
         self.calls = 0
 
     def get(self, z, x, y):
@@ -85,6 +86,15 @@ class Photos:
         img = np.zeros((256, 256, 3), np.uint8)
         img[...] = (90, 100, 82)
         img[(r > R_IN) & (r < R_OUT)] = (100, 102, 106)
+        if self.kerb:
+            a = np.arctan2((la - LAT0) * outline.M_PER_DEG, (lo - LON0) * KX)
+            # 外の縁のすぐ外（0.2〜0.8 rad）に赤白のゼブラ（1 m ごとに交互）。色は写真のにじんだ赤白
+            band = (r > R_OUT) & (r < R_OUT + 1.2) & (a > 0.2) & (a < 0.8)
+            red = (np.floor(a * R_OUT) % 2 == 0)
+            img[band & red] = (150, 128, 134)
+            img[band & ~red] = (225, 222, 222)
+            # 内の縁のすぐ内（-0.8〜-0.2 rad）は途切れない白線：ゼブラではない
+            img[(r > R_IN - 1.0) & (r < R_IN) & (a > -0.8) & (a < -0.2)] = (225, 222, 222)
         b = io.BytesIO()
         Image.fromarray(img).save(b, 'JPEG', quality=95)
         return 'ok', b.getvalue()
@@ -202,6 +212,19 @@ class OutlineTest(unittest.TestCase):
         self.assertFalse(out['complete'])
         self.assertGreater(out['share']['none'], 0.35)       # 写真が要る西の半分は線が無い
         self.assertFalse(any((Path(self.tmp.name) / 'outlines').glob('*.json')))
+
+    def test_kerbs_from_photo(self):
+        o = outline.Outlines(self.tmp.name, Photos(kerb=True), fetch=self.fetch)
+        la, lo = circle(R_CAR, 0, 2 * math.pi, 800)
+        out = o.build(la, lo)
+        self.assertTrue(out['kerbs'])
+        pts = np.concatenate([np.asarray(k) for k in out['kerbs']])
+        x, y = (pts[:, 1] - LON0) * KX, (pts[:, 0] - LAT0) * outline.M_PER_DEG
+        r, a = np.hypot(x, y), np.arctan2(y, x)
+        self.assertTrue(np.all((a > 0.1) & (a < 0.9)))          # 赤白の所だけ。白線の所は拾わない
+        self.assertTrue(np.all((r > R_OUT - 1.0) & (r < R_OUT + 2.0)))
+        self.assertGreater(np.ptp(a), 0.4)                       # ゼブラのほとんどの長さを覆う
+        self.assertEqual(outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch).build(la, lo)['kerbs'], [])
 
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
