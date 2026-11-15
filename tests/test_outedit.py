@@ -79,6 +79,26 @@ E.click(30, 10, geo);
 out.boardDel = E.dump(id).boards.length;
 out.dirty = E.dirty();
 
+// ならす：半径 30 m の円（2 mおき）に ±0.3 m のガタガタを足す。まるごとならすと、ガタガタは減り、半径は保つ
+const R0 = 30, N = Math.round(2 * Math.PI * R0 / 2), circ = [];
+for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / N, e = 0.3 * (i % 2 ? 1 : -1); circ.push([(R0 + e) * Math.cos(a), (R0 + e) * Math.sin(a)]); }
+const rads = (pts) => pts.map((p) => Math.hypot(p[0], p[1]));
+const sd = (v) => { const m = v.reduce((s, x) => s + x, 0) / v.length; return Math.sqrt(v.reduce((s, x) => s + (x - m) ** 2, 0) / v.length); };
+const mean = (v) => v.reduce((s, x) => s + x, 0) / v.length;
+E.load({ lines: [circ.concat([circ[0]])], kerbs: [], boards: [] }, id, ui);
+E.setTool('smooth');
+E.click(R0, 0, geo); E.click(R0, 0, geo);
+let r = rads(E.view().lines[0].pts);
+out.smoothRing = { sdBefore: sd(rads(circ)), sdAfter: sd(r), meanAfter: mean(r) };
+// 区間だけ：円を開いた線にして、区間の外は動かず、区間の両端も動かない
+const arc = circ.slice(0, 60);
+E.load({ lines: [arc], kerbs: [], boards: [] }, id, ui);
+E.setTool('smooth');
+E.click(...arc[15], geo); E.click(...arc[45], geo);
+const after = E.view().lines[0].pts, moved = after.map((p, i) => Math.hypot(p[0] - arc[i][0], p[1] - arc[i][1]));
+out.smoothSpan = { outside: Math.max(...moved.slice(0, 16), ...moved.slice(45)), inside: sd(rads(after.slice(22, 39))), insideBefore: sd(rads(arc.slice(22, 39))) };
+out.smoothUndo = E.undo() && E.view().lines[0].pts.every((p, i) => p[0] === arc[i][0] && p[1] === arc[i][1]);
+
 // 原点が変わったとき：点も戻す分も移る
 fresh();
 E.setTool('board'); E.click(30, 10, geo);
@@ -124,6 +144,15 @@ class OutlineEditorTest(unittest.TestCase):
         self.assertEqual(self.o['board'], [{'lat': 30, 'lon': 10, 'text': '100'}])
         self.assertEqual(self.o['boardDel'], 0)
         self.assertTrue(self.o['dirty'])
+
+    def test_smooth_keeps_curve(self):
+        s = self.o['smoothRing']
+        self.assertLess(s['sdAfter'], s['sdBefore'] / 5)       # ガタガタは 1/5 より小さく
+        self.assertAlmostEqual(s['meanAfter'], 30, delta=0.1)  # カーブは内へ縮まない
+        p = self.o['smoothSpan']
+        self.assertEqual(p['outside'], 0)                      # 区間の外と両端は動かない
+        self.assertLess(p['inside'], p['insideBefore'] / 3)
+        self.assertTrue(self.o['smoothUndo'])
 
     def test_remap(self):
         self.assertEqual(self.o['remap'], {'lat': 35, 'lon': 5, 'text': '100'})

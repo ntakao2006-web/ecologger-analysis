@@ -351,7 +351,23 @@ const CourseMap = (() => {
     if (kind === 'max') { g.fillStyle = ring; g.fill(); g.lineWidth = 2.5; g.strokeStyle = color; g.beginPath(); g.arc(px, py, r - 2.5, 0, 2 * Math.PI); g.stroke(); }
     else g.fill();
   }
-  const LABEL_K = 0.8;       // 印に数を添えるのは、1 m が 0.8 画素より大きく見えるときだけ（引いた図では数が重なって読めない）
+  // 車（カーソルの位置）：向き ang（画面の角度。動かないときは右向き）へ尖った矢じり。r は先から真ん中まで（画素）
+  function drawCar(g, px, py, ang, color, r, darkBg) {
+    if (!isFinite(ang)) ang = 0;
+    const c = Math.cos(ang), s = Math.sin(ang);
+    const pt = (fx, fy) => [px + (fx * c - fy * s) * r, py + (fx * s + fy * c) * r];
+    const shape = [pt(1, 0), pt(-0.75, 0.7), pt(-0.35, 0), pt(-0.75, -0.7)];
+    g.save();
+    g.beginPath(); g.arc(px, py, r * 1.45, 0, 2 * Math.PI);
+    g.fillStyle = darkBg ? 'rgba(255, 255, 255, 0.22)' : 'rgba(17, 24, 39, 0.14)'; g.fill();
+    g.beginPath(); shape.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath();
+    g.lineJoin = 'round';
+    g.lineWidth = 4.5; g.strokeStyle = darkBg ? '#111827' : '#ffffff'; g.stroke();
+    g.fillStyle = color; g.fill();
+    g.lineWidth = 1.5; g.strokeStyle = darkBg ? '#ffffff' : '#111827'; g.stroke();
+    g.restore();
+  }
+  const LABEL_K = 0.8;      // 印に数を添えるのは、1 m が 0.8 画素より大きく見えるときだけ（引いた図では数が重なって読めない）
   // 周の名前の短い形（走行の名前を除いた「33周」）。同じ周の番号が2つの走行にあれば長い名前のまま
   function short(lap) {
     const s = lap.label.split(' ').pop();
@@ -527,16 +543,17 @@ const CourseMap = (() => {
       const sel = L.selected === 0 ? L.line : L.sectors[L.selected - 1];
       if (sel) drawLine(g, sel, w, h, css('--accent'), 3.5, null, true);
     }
-    // カーソルの位置
+    // カーソルの位置（車）。印の●と見分けがつくよう、走る向きを指す矢じりを、白黒の縁と薄い光の輪で描く
     if (cursor !== null) {
-      const key = opts.x() === 'dist' ? 's' : 't';
+      const key = opts.x() === 'dist' ? 's' : 't', dt = key === 's' ? 4 : 0.4;
       for (const lap of data.laps) {
         if (!lap.track) continue;
         const p = posAt(lap.track, key, cursor);
-        if (!p) continue;
+        if (!p || !isFinite(p[0])) continue;
         const [px, py] = P(p[0], p[1], w, h);
-        g.fillStyle = opts.color(lap.key); g.strokeStyle = css('--panel'); g.lineWidth = 2;
-        g.beginPath(); g.arc(px, py, lap.ref ? 6 : 5, 0, 2 * Math.PI); g.fill(); g.stroke();
+        const a = posAt(lap.track, key, cursor + dt) || p, b = posAt(lap.track, key, cursor - dt) || p;
+        const [ax, ay] = P(a[0], a[1], w, h), [bx, by] = P(b[0], b[1], w, h);
+        drawCar(g, px, py, Math.atan2(ay - by, ax - bx), opts.color(lap.key), lap.ref ? 11 : 9, photo || dark);
       }
     }
     drawBoards(g, w, h);

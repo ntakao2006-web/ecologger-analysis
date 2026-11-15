@@ -9,6 +9,7 @@ const OutlineEditor = (() => {
   const UNDO_MAX = 60;
   const TOOLS = {
     move: '縁・ゼブラの点をつかんで動かします。なめらかさの距離の内の点も、離れるほど少しずつ一緒に動きます（0 なら1点だけ）。つかめない所を引くと図が動きます',
+    smooth: '同じ線の上を2か所押すと、そのあいだの細かいガタガタをならします。カーブの形は残します。同じ所を2回押すと線1本まるごと。ならす幅は「なめらかさ」の半分で、押し直すほどなめらかになります',
     straight: '同じ線の上を2か所押すと、そのあいだをまっすぐにします（輪の線は短いほうのあいだ）',
     erase: '同じ線の上を2か所押すと、そのあいだを消します（線が2本に分かれます）。ゼブラにも使えます',
     join: '線の端を押してから、つなぎたい所（別の線の端か、同じ線のもう一方の端）を押すと、まっすぐにつなぎます',
@@ -123,6 +124,62 @@ const OutlineEditor = (() => {
       const t = to - from;
       it.pts = [r[0]].concat(between(a, b), r.slice(t));
     }
+    return true;
+  }
+
+  // ならす：線に沿った距離で重みをつけた平均（ガウス、幅 σ）を2回重ね、2·G(x) − G(G(x)) をとる。
+  // 1回だけの平均はカーブを内側へ縮めるので、その縮みを打ち消してカーブの形を残す（細かい波だけを消す）。
+  // 区間の外の点も平均には使い（動かさない）、区間の両端は動かさず、端から σ のあいだで少しずつ効かせてつなぎ目に角を作らない。
+  function smooth(p, q) {
+    const it = itemOf(p), n = it.pts.length, closed = isClosed(p);
+    if (n < 3) return false;
+    const sigma = Math.max(1, ui.radius() / 2), reach = 3 * sigma;
+    let from, to, ring = false;
+    if (p.i === q.i) {               // 同じ所を2回：線1本まるごと
+      if (closed) { from = 0; to = n; ring = true; } else { from = 0; to = n - 1; }
+    } else ({ from, to } = span(it, closed, p.i, q.i));
+    if (to - from < 2) return false;
+    const P = it.pts;
+    const S = [0];                   // 頭からの、線に沿った距離
+    for (let k = 1; k < n; k++) S.push(S[k - 1] + dist(P[k - 1], P[k]));
+    const L = closed ? S[n - 1] + dist(P[n - 1], P[0]) : S[n - 1];
+    const gauss = (src, k) => {     // 点 k のまわりの重みつき平均（輪は回り込み、開いた線は端で止める）
+      let sx = 0, sy = 0, sw = 0;
+      const one = (j, d) => { const w = Math.exp(-(d * d) / (2 * sigma * sigma)); sx += w * src[j][0]; sy += w * src[j][1]; sw += w; };
+      one(k, 0);
+      for (const dir of [1, -1]) {
+        for (let c = 1; c < n; c++) {
+          let j = k + dir * c;
+          if (closed) j = ((j % n) + n) % n; else if (j < 0 || j >= n) break;
+          let d = Math.abs(S[j] - S[k]);
+          if (closed) d = Math.min(d, L - d);
+          if (d > reach || (closed && 2 * c > n)) break;
+          one(j, d);
+        }
+      }
+      return [sx / sw, sy / sw];
+    };
+    const g1 = P.map((pt, j) => gauss(P, j));   // 1回目は線全体（数千点 × 窓の十数点なので軽い）
+    // 区間の中の、端からの距離（σ のあいだで効きを 0 → 1）
+    const along = [0];
+    for (let k = from + 1; k <= to; k++) along.push(along[along.length - 1] + dist(P[(k - 1) % n], P[k % n]));
+    const total = along[along.length - 1], ramp = Math.min(sigma, total / 2);
+    snapshot();
+    const out = P.map((pt) => pt.slice());
+    for (let k = from; k <= to; k++) {
+      const i = k % n;
+      let w = 1;
+      if (!ring) {
+        const e = Math.min(along[k - from], total - along[k - from]);
+        const t = ramp > 0 ? Math.min(1, e / ramp) : 1;
+        w = t * t * (3 - 2 * t);
+      }
+      if (w <= 0) continue;
+      const g2 = gauss(g1, i);
+      const sx = 2 * g1[i][0] - g2[0], sy = 2 * g1[i][1] - g2[1];
+      out[i] = [P[i][0] + w * (sx - P[i][0]), P[i][1] + w * (sy - P[i][1])];
+    }
+    it.pts = out;
     return true;
   }
 
@@ -247,7 +304,7 @@ const OutlineEditor = (() => {
     if (!st) return;
     const tol = tolM(geo), t = st.tool;
     let done = false;
-    if (t === 'straight' || t === 'erase' || t === 'zebraAdd') {
+    if (t === 'smooth' || t === 'straight' || t === 'erase' || t === 'zebraAdd') {
       const kinds = t === 'zebraAdd' ? ['line'] : ['line', 'kerb'];
       const p = pickPath(x, y, tol, kinds);
       if (!p) { st.pend = null; return; }
@@ -255,7 +312,7 @@ const OutlineEditor = (() => {
       const a = st.pend;
       st.pend = null;
       if (a.kind !== p.kind || a.idx !== p.idx) { st.pend = p; return; }   // 別の線なら、押し直しの1か所目にする
-      done = t === 'straight' ? straighten(a, p) : t === 'erase' ? erase(a, p) : zebraAdd(a, p, geo);
+      done = t === 'smooth' ? smooth(a, p) : t === 'straight' ? straighten(a, p) : t === 'erase' ? erase(a, p) : zebraAdd(a, p, geo);
     } else if (t === 'join') {
       if (!st.pend) { st.pend = pickEnd(x, y, tol); return; }
       const q = pickEnd(x, y, tol);
