@@ -551,7 +551,8 @@ async function lineRequest(action, body) {
     if (!j.ok) { status(j.error, 'ng'); return false; }
     const byId = new Map(j.sessions.map((x) => [x.id, x]));
     state.sessions = state.sessions.map((x) => byId.get(x.id) || x);
-    status(action === 'save' ? `線の版「${body.name}」を保存し、周を切り直しました` : '線を切り替え、周を切り直しました', 'ok');
+    status((action === 'save' ? `線の版「${body.name}」を保存し、周を切り直しました` : '線を切り替え、周を切り直しました') +
+      '（動画の位置も新しい周の頭に合わせ直しました）', 'ok');
     render();
     return true;
   } catch (e) { status('裏の処理とつながっていません', 'ng'); return false; }
