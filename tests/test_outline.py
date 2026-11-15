@@ -29,7 +29,7 @@ def pit_radius(a):
     return R_CAR + (PIT_R - R_CAR) * np.minimum(up, down)
 
 
-def drive(t0, laps, pit=False, stop_s=0.0, spur=False, jitter=0.0, seed=0):
+def drive(t0, laps, pit=False, stop_s=0.0, spur=False, jitter=0.0, seed=0, garage=False):
     """(-π から左回りに) laps 周走った測位 (t, lat, lon)。0.1 秒おき、コースは 30 m/s、ピットロードは 15 m/s。
     pit：最後の周でピットを通る。stop_s：ピットの真ん中（0 rad）で止まる秒。spur：止まる前に外（半径 128 m）へ寄り道して戻る"""
     rng = np.random.default_rng(seed)
@@ -39,7 +39,16 @@ def drive(t0, laps, pit=False, stop_s=0.0, spur=False, jitter=0.0, seed=0):
         r = pit_radius(a) if (pit and k == laps - 1) else np.full_like(a, R_CAR)
         r = r + jitter * rng.standard_normal() * np.ones_like(a)
         x, y = r * np.cos(a), r * np.sin(a)
-        if pit and k == laps - 1 and (stop_s or spur):
+        if pit and k == laps - 1 and garage:
+            # ガレージ（半径 128 m）へ 0 rad で入り、止まって、0.1 rad から出てくる（ガレージ前を素通りする回は無い）
+            i, j = int(np.argmin(np.abs(a))), int(np.argmin(np.abs(a - 0.1)))
+            out_r = np.linspace(PIT_R, 128.0, 60)
+            ga = np.linspace(0.0, 0.1, 30)
+            gx = np.r_[out_r * math.cos(0.0), np.full(int(stop_s * 10), 128.0), 128.0 * np.cos(ga), out_r[::-1] * math.cos(0.1)]
+            gy = np.r_[out_r * math.sin(0.0), np.zeros(int(stop_s * 10)), 128.0 * np.sin(ga), out_r[::-1] * math.sin(0.1)]
+            x = np.r_[x[:i], gx, x[j:]]
+            y = np.r_[y[:i], gy, y[j:]]
+        elif pit and k == laps - 1 and (stop_s or spur):
             i = int(np.argmin(np.abs(a)))
             extra = [np.full(int(stop_s * 10), x[i]), np.full(int(stop_s * 10), y[i])]
             if spur:
@@ -411,11 +420,42 @@ class OutlineTest(unittest.TestCase):
                 o.snap(bad)
 
     # ---- ピットロード（SP-10-36）
-    def pit_data(self, passes=3, spur=False):
+    def pit_data(self, passes=3, spur=False, garage=False):
         parts = [drive(0.0, 20, jitter=0.4, seed=1)]          # ピットを通る回は1割より少なく（コースの縁の USED_Q）
         for k in range(passes):
-            parts.append(drive(10000.0 * (k + 1), 2, pit=True, stop_s=60.0 if k == 0 else 0.0, spur=spur and k == 1, seed=k + 2))
+            parts.append(drive(10000.0 * (k + 1), 2, pit=True, stop_s=60.0 if (k == 0 or garage) else 0.0, spur=spur and k == 1,
+                               seed=k + 2, garage=garage))
         return [np.concatenate(x) for x in zip(*parts)]
+
+    def test_pit_lane_when_every_pass_goes_into_the_garage(self):
+        # どの回もガレージへ入って別の所から出てくる：寄り道を切り、曲がっている点を使わないので、ガレージ前でも中心線は膨らまない
+        o = outline.Outlines(self.tmp.name, Photos(pit=True), fetch=self.fetch)
+        la, lo = circle(R_CAR, -math.pi, math.pi, 800)
+        t, a, b = self.pit_data(3, garage=True)
+        edges = [np.stack(circle(R_IN, 0, 2 * math.pi, 800), axis=1).tolist(), np.stack(circle(R_OUT, 0, 2 * math.pi, 800), axis=1).tolist()]
+        r = o.pit_lane(la, lo, edges, t, a, b)
+        self.assertEqual(r['passes'], 3)
+        c = np.asarray(r['center'])
+        ang = np.arctan2((c[:, 0] - LAT0) * outline.M_PER_DEG, (c[:, 1] - LON0) * KX)
+        rc = self.radius_of(r['center'])
+        mid = np.abs(ang) < 0.35
+        self.assertLess(np.abs(rc[mid] - PIT_R).max(), 0.6)
+        self.assertLess(rc.max(), PIT_R + 1.0)
+        rs = np.concatenate([self.radius_of(ln) for ln in r['lines']])
+        self.assertLess(rs.max(), PIT_R + 4.0)                       # 縁もガレージへ膨らまない
+
+    def test_cut_loops_keeps_hairpins(self):
+        cut = outline.Outlines._cut_loops
+        # 半径 10 m の半円（ヘアピン）は残す
+        a = np.linspace(0, math.pi, 60)
+        hp = np.r_[np.c_[np.linspace(-40, 0, 40), np.full(40, -10.0)], np.c_[10 * np.sin(a), -10 * np.cos(a)], np.c_[np.linspace(0, -40, 40), np.full(40, 10.0)]]
+        self.assertEqual(len(cut(hp)), len(hp))
+        # まっすぐの道から 12 m 外へ出て、10 m 先から戻る寄り道は切る
+        road = np.c_[np.arange(0, 100.0), np.zeros(100)]
+        spur = np.r_[road[:40], np.c_[np.full(12, 40.0), np.arange(1, 13.0)], np.c_[np.arange(41, 50.0), np.full(9, 12.0)],
+                     np.c_[np.full(12, 50.0), np.arange(12, 0, -1.0)], road[50:]]
+        p = cut(spur)
+        self.assertLess(np.abs(p[:, 1]).max(), 1e-9)
 
     def test_pit_lane_from_passes(self):
         o = outline.Outlines(self.tmp.name, Photos(pit=True), fetch=self.fetch)

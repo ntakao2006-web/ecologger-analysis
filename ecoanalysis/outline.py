@@ -34,7 +34,7 @@ import numpy as np
 
 from . import __version__, mvt
 
-VERSION = 6                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す。4：こぶ取り・ゼブラを帯に。5：縁をゼブラの内側の端へ。6：ピットロードを足す
+VERSION = 7                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す。4：こぶ取り・ゼブラを帯に。5：縁をゼブラの内側の端へ。6：ピットロードを足す。7：ピットロードのガレージ前の膨らみを取る
 BV_URL = 'https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'
 BV_Z = 16                       # 道路縁（縮尺 1/2500 の元）が入っている細かさ
 PHOTO_Z = 18
@@ -107,12 +107,22 @@ PIT_MIN_PASSES = 2                      # ピットを通った回（入るだ�
 PIT_STOP_KMH = 5.0                      # これより遅い所は止まっているとみる（線の形には使わない）
 PIT_CELL_M = 1.0                        # 通った回を重ねる升目
 PIT_SPREAD_M = 2.0                      # 通った回の線をこれだけ太らせて重ねる
-PIT_LOOP_M, PIT_LOOP_ALONG_M = 5.0, 25.0  # 道のりでこれだけ離れた2点がこの距離の内なら、そのあいだは寄り道（ガレージへの出入り）として切る
+PIT_LOOP_CHORD_M = 25.0                 # 寄り道：弦がこれ以内で、
+PIT_LOOP_RATIO = 2.0                    # 道のりが弦のこれだけ倍より長い所は、ガレージ・パドックへの出入りとして切る（S字・Z字は1.4倍ほどまで）
+PIT_LOOP_SAME_DEG = 60.0                # 寄り道：切る所の前と後の進む向きがこの角度の内（ヘアピンと見分ける）
+PIT_LOOP_MIN_M = 4.0                    # 弦がこれより短いときはこれとみる（同じ所へ戻ってきた輪）
 PIT_LAT_M = 4.0                         # 縦の位置でそろえるとき、中心からこれより離れた点は使わない（寄り道）
 PIT_W_MIN_M, PIT_W_MAX_M, PIT_W_DEF_M = 2.0, 12.0, 4.0     # 中心から縁までの距離（写真で測れなければ PIT_W_DEF_M）
 PIT_SNAP_REACH_M = 2.5                  # 縁を写真の境目へ吸い付かせるとき、横へ探す遠さ
+PIT_TURN_DEG = 30.0                     # 中心線：レーンの向きからこれより曲がって動いている点（ガレージ・パドックへの出入り）は使わない
+PIT_GAP_COST = 8.0                      # 案内の道を引き直すとき、通っていない升目を渡る損（1 m あたり。通った升目は 1〜2）
+PIT_HEAD_N = 3                          # 動いている向きは前後この点の数の差で見る
+PIT_HEAD_MAX_STEP_M = 4.0               # 1点あたりこれより跳んだ所（止まった前後のつなぎ目）は向きを見ない
+PIT_BUMP_WIN = 31                       # こぶ取り：中心線からの距離を、前後この点の数（×2 m）の中央値と比べる
+PIT_BUMP_M = 0.6                        # こぶ取り：中央値からこれだけ飛び出したらこぶ
+PIT_BUMP_GROW = 3                       # こぶ取り：こぶの前後この点の数も前後からつなぎ直す
 PIT_EDGE_SMOOTH = 9                     # 吸い付いた縁の、中心線からの距離をならす点の数（×2 m）
-PIT_MIN_PIECE = 8                       # コースの中で切ったあと、これより点の少ない（短い）切れ端は捨てる
+PIT_MIN_PIECE = 15                      # コースの中で切ったあと、これより点の少ない（30 m より短い）切れ端は捨てる（ピットウォール側の縁がコースの縁からわずかに出た所）
 TIMEOUT_S = 8
 MAX_BYTES = 2 << 20
 ATTRIBUTION = '国土地理院の地理院地図Vector（道路縁）と航空写真を加工して作成'
@@ -196,6 +206,30 @@ def _mean_open(v, w):
         return v.copy()
     p = np.r_[np.full(k, v[0]), v, np.full(k, v[-1])]
     return np.convolve(p, np.ones(2 * k + 1) / (2 * k + 1), 'valid')
+
+
+def _debump_open(v, win=None, thr=None, grow=None):
+    """輪でない線の、中心線からの距離 v の短いこぶ・へこみを削る（前後 win の中央値から thr より飛び出した所と、
+    その前後 grow を、前後の残った値から線形につなぎ直す）。幅の段の変わり目は中央値がそのまま追うので削らない"""
+    win = PIT_BUMP_WIN if win is None else win
+    thr = PIT_BUMP_M if thr is None else thr
+    grow = PIT_BUMP_GROW if grow is None else grow
+    v = np.asarray(v, float).copy()
+    if len(v) < 5:
+        return v
+    for _ in range(2):
+        bad = np.abs(v - _median_open(v, win)) > thr
+        if not bad.any():
+            break
+        g = bad.copy()
+        for k in range(1, grow + 1):
+            g[k:] |= bad[:-k]
+            g[:-k] |= bad[k:]
+        good = np.flatnonzero(~g)
+        if len(good) < 2:
+            break
+        v[g] = np.interp(np.flatnonzero(g), good, v[good])
+    return v
 
 
 def _runs(flags):
@@ -1013,9 +1047,9 @@ class Outlines:
         return np.concatenate(segs) if segs else np.zeros((0, 4))
 
     @staticmethod
-    def _route(runs_xy, start, goal):
+    def _route(runs_xy, start, goal, gap_cost=None):
         """通った回の線（m の点の並びのリスト）を升目に重ね、start から goal まで、通った升目だけを通るいちばん短い道（m の点の並び）。
-        よく通った升目ほど少し安い。寄り道（ガレージへの出入り）は短い道にならないので入らない"""
+        よく通った升目ほど少し安い。gap_cost を渡すと、通っていない升目も 1 m あたりその損で渡れる（切れ目をつなぐ）"""
         import heapq
         allp = np.concatenate(runs_xy + [np.asarray([start, goal])])
         x0, y0 = allp.min(axis=0) - 10.0
@@ -1055,9 +1089,14 @@ class Outlines:
                 continue
             for a, b, L in steps:
                 v = (u[0] + a, u[1] + b)
-                if not (0 <= v[0] < H and 0 <= v[1] < W) or sup[v] == 0:
+                if not (0 <= v[0] < H and 0 <= v[1] < W):
                     continue
-                nc = c + L * (1.0 + 1.0 / sup[v])
+                if sup[v] == 0:
+                    if gap_cost is None:
+                        continue
+                    nc = c + L * gap_cost
+                else:
+                    nc = c + L * (1.0 + 1.0 / sup[v])
                 if nc < dist.get(v, math.inf):
                     dist[v] = nc
                     prev[v] = u
@@ -1072,13 +1111,22 @@ class Outlines:
 
     @staticmethod
     def _cut_loops(p):
-        """道のりで PIT_LOOP_ALONG_M より離れた2点が PIT_LOOP_M の内に戻っていれば、そのあいだを切る"""
+        """寄り道を切る：弦（2点のあいだのまっすぐの距離）が PIT_LOOP_CHORD_M 以内で、道のりが弦の PIT_LOOP_RATIO 倍より長い所は、
+        行って戻ってきた寄り道（ガレージ・パドックへ入って、別の所から出てきた）として、そのあいだをまっすぐつなぐ。
+        切る所の前と後で進む向きが PIT_LOOP_SAME_DEG の内のときだけ（ヘアピンは向きが逆になるので切らない）"""
         s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(p, axis=0).T))))
+        k = 3                                       # 向きは前後 k 点の差（升目の道のガタつきをならす）
+        tg = np.r_[p[k:], np.repeat(p[-1:], k, axis=0)] - np.r_[np.repeat(p[:1], k, axis=0), p[:-k]]
+        L = np.hypot(tg[:, 0], tg[:, 1])
+        tg = tg / np.where(L > 0, L, 1.0)[:, None]
+        cos_same = math.cos(math.radians(PIT_LOOP_SAME_DEG))
         out, i = [], 0
         while i < len(p):
             out.append(i)
             d = np.hypot(p[i + 1:, 0] - p[i, 0], p[i + 1:, 1] - p[i, 1])
-            c = np.flatnonzero((d < PIT_LOOP_M) & (s[i + 1:] - s[i] > PIT_LOOP_ALONG_M))
+            along = s[i + 1:] - s[i]
+            same = tg[i + 1:] @ tg[i] >= cos_same      # 寄り道から戻ると、前と同じ向きへ進む（ヘアピンは逆向き）
+            c = np.flatnonzero((d <= PIT_LOOP_CHORD_M) & (along > PIT_LOOP_RATIO * np.maximum(d, PIT_LOOP_MIN_M)) & same)
             i = i + 1 + int(c[-1]) if len(c) else i + 1
         return p[out]
 
@@ -1105,8 +1153,11 @@ class Outlines:
         2. コースの外の続き（PIT_JOIN_S より短い戻りはつなぐ。止まっている時間も入れる）のうち、PIT_MIN_M より長く動き、
            PIT_FAR_M より外まで出たものを候補にし、コースを出た所（入口）・戻った所（出口）がいちばん多く重なる所をピットの入口・出口とする。
            入口か出口がそこに合う続きがピットを通った回（走行の頭・終わりの、入るだけ・出るだけも数える）
-        3. 通った回を升目に重ね、入口から出口まで通った升目だけを通る短い道を案内にし（ガレージへの寄り道は入らない）、
-           通った回の点を案内の縦の位置でそろえて、横の位置の中央値を中心線にする（2回）
+        3. 通った回を升目に重ね、入口から出口まで通った升目だけを通る短い道を案内にし（行って戻ってくる寄り道は切る）、
+           その向きに沿って動いている所だけで升目を作り直して引き直し（ガレージへの出入りの足が消えた切れ目は高い損で渡る）、
+           通った回の点を案内の縦の位置でそろえて、横の位置の中央値を中心線にする（2回。レーンの向きから曲がって動いている点＝
+           ガレージ・パドックへの出入りは使わない。2回目は飛び出した所を前後からつなぐ）
+        縁も、中心線からの距離の短いこぶ・へこみ（ガレージ前・横断歩道の広い舗装）を前後からつなぐ
         4. 中心線から左右へ航空写真の舗装の切れ目を測って幅にし、その所の線を写真の境目へ吸い付かせて左右の縁にする（inside=0）。
            コースの中へ入った所は切る
         返り値 {lines: [左の縁, 右の縁]（[[lat, lon], …]）, center, passes: 通った回の数, found: 縁が見つかった割合, width_m: [左, 右]}"""
@@ -1184,17 +1235,49 @@ class Outlines:
         goal = np.median([runs[i]['exit'] for i in eout], axis=0)
         xy = [runs[i]['xy'] for i in pit if len(runs[i]['xy'])]
         # 3. 案内の道と、縦の位置でそろえた中心線
+        sin_turn = math.sin(math.radians(PIT_TURN_DEG))
+        heads = []
+        for p in xy:                                    # 動いている向き（前後 PIT_HEAD_N 点の差）
+            k = PIT_HEAD_N
+            h = np.full((len(p), 2), np.nan)
+            if len(p) > 2 * k:
+                h[k:-k] = p[2 * k:] - p[:-2 * k]
+                L = np.hypot(h[:, 0], h[:, 1])
+                ok_h = np.isfinite(L) & (L > 0) & (L < 2 * k * PIT_HEAD_MAX_STEP_M)   # 止まった前後で跳んだ所は向きを見ない
+                h[ok_h] /= L[ok_h, None]
+                h[~ok_h] = np.nan
+                h[:k], h[-k:] = h[k], h[-k - 1]         # 頭と終わりは隣の向き（コースを出た所・戻った所も使う）
+            heads.append(h)
+
+        def along_lane(cx, cy, cnx, cny):
+            """各回の点のうち、レーンの向き（中心線の向き）に沿って動いている所（PIT_TURN_DEG の内）。ガレージ・パドックへの出入りは外れる"""
+            out = []
+            for p, h in zip(xy, heads):
+                j, _q = self._project(p[:, 0], p[:, 1], cx, cy, cnx, cny)
+                cross = np.abs(h[:, 0] * cnx[j] + h[:, 1] * cny[j])     # 横向きの成分（cnx, cny は左向き）
+                out.append(np.isfinite(cross) & (cross <= sin_turn))
+            return out
         route = self._cut_loops(self._route(xy, start, goal))
         if len(route) < 10:
             raise OutlineError('ピットロードが短すぎます')
+        # レーンに沿って動いている所だけで引き直す（寄り道の足が消えた切れ目は、通っていない升目を高い損で渡る）
         cx, cy, cnx, cny = self._line_frame(route)
-        for _ in range(2):
+        pieces = []
+        for p, st_ in zip(xy, along_lane(cx, cy, cnx, cny)):
+            for rr in np.split(np.arange(len(p)), np.flatnonzero(np.diff(st_.astype(int)) != 0) + 1):
+                if st_[rr[0]] and len(rr) >= 2:
+                    pieces.append(p[rr])
+        if pieces:
+            route = self._cut_loops(self._route(pieces, start, goal, PIT_GAP_COST))
+        cx, cy, cnx, cny = self._line_frame(route)
+        for it in range(2):
             m = len(cx)
             per = np.full((len(xy), m), np.nan)
+            lane = along_lane(cx, cy, cnx, cny)         # ガレージ・パドックへ曲がって出入りする所は使わない
             for ri, p in enumerate(xy):
                 j, q = self._project(p[:, 0], p[:, 1], cx, cy, cnx, cny)
                 along = np.abs((p[:, 0] - cx[j]) * cny[j] - (p[:, 1] - cy[j]) * cnx[j])    # 縦のずれ（端の外の点）
-                use = (np.abs(q) <= PIT_LAT_M) & (along <= STEP_M)
+                use = (np.abs(q) <= PIT_LAT_M) & (along <= STEP_M) & lane[ri]
                 for jj in np.unique(j[use]):
                     per[ri, jj] = float(np.median(q[use & (j == jj)]))
             import warnings
@@ -1205,6 +1288,8 @@ class Outlines:
             if have.sum() < 2:
                 raise OutlineError('ピットの通過の線がそろいません')
             off_c = np.interp(np.arange(m), np.flatnonzero(have), off_c[have])
+            if it == 1:                                 # 2回目は前の中心線からの小さな直しだけのはず。飛び出した所（こぶ）は前後からつなぐ
+                off_c = _debump_open(off_c)
             if m >= 11:
                 off_c = np.convolve(np.r_[np.full(4, off_c[0]), off_c, np.full(4, off_c[-1])], np.ones(9) / 9, 'valid')
             cx, cy, cnx, cny = self._line_frame(np.stack((cx + cnx * off_c, cy + cny * off_c), axis=1))
@@ -1237,7 +1322,7 @@ class Outlines:
                 j = np.argmin((cx[:, None] - sx[None, :]) ** 2 + (cy[:, None] - sy[None, :]) ** 2, axis=1)
                 qs = (sx[j] - cx) * cnx + (sy[j] - cy) * cny
                 qs = np.where(np.abs(qs - q) <= PIT_SNAP_REACH_M + 0.5, qs, q)
-                q = _mean_open(_median_open(qs, PIT_EDGE_SMOOTH), 5)
+                q = _mean_open(_debump_open(_median_open(qs, PIT_EDGE_SMOOTH)), 5)   # ガレージ前・横断歩道の広い舗装へのへこみも取る
             except OutlineError:
                 f = 0.0
             found.append(f)
