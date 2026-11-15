@@ -16,7 +16,8 @@
 
 - タイルは ~/.ecologger-analysis/tiles/ に残す（写真は tiles.py と同じ置き場）。送るのはタイルの番号だけ
 - できた図はコースごとに ~/.ecologger-analysis/outlines/ に残し、2回目からはすぐ出す
-- ピットロードは作らない（走った周の線を案内にするため）。エディタで種類を「ピットロード」にした線を手で足す（check_edit の kinds）
+- コースの縁は、ピットを通った回を数えずに作る（USED_Q・FILL_GAP・ZEBRA_MIN）。ピットロードは別に、ピットに入って出た通過の測位から
+  作って種類 'pit' の線として足す（pit_lane。SP-10-36）。手で直したコース図には、エディタの「ピットロードを足す」で足す
 """
 import hashlib
 import io
@@ -33,7 +34,7 @@ import numpy as np
 
 from . import __version__, mvt
 
-VERSION = 5                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す。4：こぶ取り・ゼブラを帯に。5：縁をゼブラの内側の端へ
+VERSION = 6                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す。4：こぶ取り・ゼブラを帯に。5：縁をゼブラの内側の端へ。6：ピットロードを足す
 BV_URL = 'https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'
 BV_Z = 16                       # 道路縁（縮尺 1/2500 の元）が入っている細かさ
 PHOTO_Z = 18
@@ -95,6 +96,23 @@ SNAP_C_FLOOR, SNAP_C_FULL = 0.3, 1.2    # 色の段がこれより小さけれ�
 SNAP_FOUND = 0.35                      # 縁らしさがこれ以上の所を「見つかった」と数える
 SNAP_MIN_M, SNAP_MAX_M = 4.0, 3000.0
 SNAP_MAX_POINTS = 20000
+PIT_EDGE_M = 0.5                        # ピットロード：コースの縁よりこれだけ外を「コースの外」とみる
+PIT_SLACK_M = 3.0                       # ピットロード：縁が無い所は、走った幅（PIT_USED_Q）よりこれだけ外を「コースの外」とみる
+PIT_USED_Q = 75                         # ピットロード：走った幅はこの百分位（ピットを通った回が1割を超えても、ピットロードまで広がらないように）
+PIT_JOIN_S = 3.0                        # コースの外の続きのあいだで、これより短くコースへ戻った所はつなぐ（入口・出口の合流で縁をかすめる）
+PIT_FAR_M = 3.0                         # ピットの通過は、どこかで「コースの外」の線からこれだけ外へ出る
+PIT_MIN_M = 100.0                       # 動いた道のりがこれより短い外れは見ない（縁をかすめた・はみ出しただけ）
+PIT_END_M = 60.0                        # 入口・出口がこれだけの内なら同じ所（出口の道はコースに沿って合流するので、戻る所が回ごとに数十 m ずれる）
+PIT_MIN_PASSES = 2                      # ピットを通った回（入るだけ・出るだけも1回）がこれより少なければ作らない
+PIT_STOP_KMH = 5.0                      # これより遅い所は止まっているとみる（線の形には使わない）
+PIT_CELL_M = 1.0                        # 通った回を重ねる升目
+PIT_SPREAD_M = 2.0                      # 通った回の線をこれだけ太らせて重ねる
+PIT_LOOP_M, PIT_LOOP_ALONG_M = 5.0, 25.0  # 道のりでこれだけ離れた2点がこの距離の内なら、そのあいだは寄り道（ガレージへの出入り）として切る
+PIT_LAT_M = 4.0                         # 縦の位置でそろえるとき、中心からこれより離れた点は使わない（寄り道）
+PIT_W_MIN_M, PIT_W_MAX_M, PIT_W_DEF_M = 2.0, 12.0, 4.0     # 中心から縁までの距離（写真で測れなければ PIT_W_DEF_M）
+PIT_SNAP_REACH_M = 2.5                  # 縁を写真の境目へ吸い付かせるとき、横へ探す遠さ
+PIT_EDGE_SMOOTH = 9                     # 吸い付いた縁の、中心線からの距離をならす点の数（×2 m）
+PIT_MIN_PIECE = 8                       # コースの中で切ったあと、これより点の少ない（短い）切れ端は捨てる
 TIMEOUT_S = 8
 MAX_BYTES = 2 << 20
 ATTRIBUTION = '国土地理院の地理院地図Vector（道路縁）と航空写真を加工して作成'
@@ -156,6 +174,28 @@ def _median_circular(v, w):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
             return np.nanmedian(win, axis=1)[:len(v)]
+
+
+def _median_open(v, w):
+    """端をのばしてならす中央値（輪でない線。NaN は見ない）"""
+    v = np.asarray(v, float)
+    if len(v) < 3:
+        return v.copy()
+    k = min(w // 2, len(v) - 1)
+    p = np.r_[np.full(k, v[0]), v, np.full(k, v[-1])]
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        return np.nanmedian(np.lib.stride_tricks.sliding_window_view(p, 2 * k + 1), axis=1)
+
+
+def _mean_open(v, w):
+    v = np.asarray(v, float)
+    k = min(w // 2, len(v) - 1)
+    if k < 1:
+        return v.copy()
+    p = np.r_[np.full(k, v[0]), v, np.full(k, v[-1])]
+    return np.convolve(p, np.ones(2 * k + 1) / (2 * k + 1), 'valid')
 
 
 def _runs(flags):
@@ -657,7 +697,7 @@ class Outlines:
 
     # ---- まとめ
     @staticmethod
-    def used_width(origin, gx, gy, nx, ny, t_all, lat_all, lon_all):
+    def used_width(origin, gx, gy, nx, ny, t_all, lat_all, lon_all, q=USED_Q):
         """走行の全部の測位が、案内の線から左右へ散らばった幅 (n, 2)（左, 右。点が無ければ 0）。
         横断面ごとに「通った回」（PASS_GAP_S より離れた時刻で分ける）の横の位置をそれぞれ1つにまとめ、
         回の中で左右の USED_Q の百分位を取る。止まっていた所・ゆっくり動いた所が点の数で重くならないように"""
@@ -697,8 +737,8 @@ class Outlines:
             tt, vv = tt[o], vv[o]
             cut = np.flatnonzero(np.diff(tt) > PASS_GAP_S) + 1
             passes = np.array([np.median(x) for x in np.split(vv, cut)])
-            out[i, 0] = max(0.0, float(np.percentile(passes, USED_Q)))
-            out[i, 1] = max(0.0, -float(np.percentile(passes, 100 - USED_Q)))
+            out[i, 0] = max(0.0, float(np.percentile(passes, q)))
+            out[i, 1] = max(0.0, -float(np.percentile(passes, 100 - q)))
         return out
 
     def measure(self, origin, gx, gy, nx, ny, segs, tmin, tmax=None):
@@ -943,6 +983,278 @@ class Outlines:
         return {'pts': [[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(qx, qy)],
                 'found': round(float(found.mean()), 3), 'shift_m': round(float(np.median(np.abs(o))), 2)}
 
+    # ---- ピットロードを走行の測位から作る（SP-10-36）
+    @staticmethod
+    def _project(px, py, gx, gy, nx, ny):
+        """点 (px, py) のいちばん近い横断面の番号と、そこからの横の位置（左が正）"""
+        k = np.empty(len(px), np.int64)
+        o = np.empty(len(px))
+        CH = 2048
+        for i0 in range(0, len(px), CH):
+            dx = px[i0:i0 + CH, None] - gx[None, :]
+            dy = py[i0:i0 + CH, None] - gy[None, :]
+            kk = np.argmin(dx * dx + dy * dy, axis=1)
+            r = np.arange(len(kk))
+            k[i0:i0 + CH] = kk
+            o[i0:i0 + CH] = dx[r, kk] * nx[kk] + dy[r, kk] * ny[kk]
+        return k, o
+
+    @staticmethod
+    def _local_segs(origin, lines_):
+        lat0, lon0 = origin
+        kx = M_PER_DEG * math.cos(math.radians(lat0))
+        segs = []
+        for ln in lines_:
+            p = np.asarray(ln, float)
+            if p.ndim != 2 or len(p) < 2:
+                continue
+            x, y = (p[:, 1] - lon0) * kx, (p[:, 0] - lat0) * M_PER_DEG
+            segs.append(np.stack((x[:-1], y[:-1], x[1:], y[1:]), axis=1))
+        return np.concatenate(segs) if segs else np.zeros((0, 4))
+
+    @staticmethod
+    def _route(runs_xy, start, goal):
+        """通った回の線（m の点の並びのリスト）を升目に重ね、start から goal まで、通った升目だけを通るいちばん短い道（m の点の並び）。
+        よく通った升目ほど少し安い。寄り道（ガレージへの出入り）は短い道にならないので入らない"""
+        import heapq
+        allp = np.concatenate(runs_xy + [np.asarray([start, goal])])
+        x0, y0 = allp.min(axis=0) - 10.0
+        W, H = (np.ceil((allp.max(axis=0) - (x0, y0) + 10.0) / PIT_CELL_M).astype(int) + 1)
+        if W * H > 4_000_000:
+            raise OutlineError('ピットの通過が広がりすぎていて、道を作れません')
+        r = int(math.ceil(PIT_SPREAD_M / PIT_CELL_M))
+        disk = [(a, b) for a in range(-r, r + 1) for b in range(-r, r + 1) if a * a + b * b <= r * r]
+        sup = np.zeros((H, W), np.int32)
+        for p in runs_xy:
+            if len(p) >= 2:                      # 点のあいだも埋める（升目の半分おき）
+                seg = np.hypot(*np.diff(p, axis=0).T)
+                k = np.maximum(1, np.ceil(seg / (PIT_CELL_M / 2)).astype(int))
+                p = np.concatenate([p[i] + (p[i + 1] - p[i]) * (np.arange(k[i])[:, None] / k[i]) for i in range(len(p) - 1)] + [p[-1:]])
+            ix = np.clip(((p[:, 0] - x0) / PIT_CELL_M).astype(int), 0, W - 1)
+            iy = np.clip(((p[:, 1] - y0) / PIT_CELL_M).astype(int), 0, H - 1)
+            m = np.zeros((H + 2 * r, W + 2 * r), bool)
+            for a, b in disk:
+                m[iy + r + b, ix + r + a] = True
+            sup += m[r:r + H, r:r + W]
+        ok = np.argwhere(sup > 0)
+
+        def cell(q):
+            c = np.array([(q[1] - y0) / PIT_CELL_M, (q[0] - x0) / PIT_CELL_M])
+            j = int(np.argmin(((ok - c) ** 2).sum(axis=1)))
+            return int(ok[j, 0]), int(ok[j, 1])
+        s, g = cell(start), cell(goal)
+        dist = {s: 0.0}
+        prev = {}
+        heap = [(0.0, s)]
+        steps = [(a, b, math.hypot(a, b)) for a in (-1, 0, 1) for b in (-1, 0, 1) if a or b]
+        while heap:
+            c, u = heapq.heappop(heap)
+            if u == g:
+                break
+            if c > dist.get(u, math.inf):
+                continue
+            for a, b, L in steps:
+                v = (u[0] + a, u[1] + b)
+                if not (0 <= v[0] < H and 0 <= v[1] < W) or sup[v] == 0:
+                    continue
+                nc = c + L * (1.0 + 1.0 / sup[v])
+                if nc < dist.get(v, math.inf):
+                    dist[v] = nc
+                    prev[v] = u
+                    heapq.heappush(heap, (nc, v))
+        if g not in dist:
+            raise OutlineError('ピットの入口から出口までつながる道が見つかりません')
+        path = [g]
+        while path[-1] != s:
+            path.append(prev[path[-1]])
+        path = np.asarray(path[::-1], float)
+        return np.stack((x0 + (path[:, 1] + 0.5) * PIT_CELL_M, y0 + (path[:, 0] + 0.5) * PIT_CELL_M), axis=1)
+
+    @staticmethod
+    def _cut_loops(p):
+        """道のりで PIT_LOOP_ALONG_M より離れた2点が PIT_LOOP_M の内に戻っていれば、そのあいだを切る"""
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(p, axis=0).T))))
+        out, i = [], 0
+        while i < len(p):
+            out.append(i)
+            d = np.hypot(p[i + 1:, 0] - p[i, 0], p[i + 1:, 1] - p[i, 1])
+            c = np.flatnonzero((d < PIT_LOOP_M) & (s[i + 1:] - s[i] > PIT_LOOP_ALONG_M))
+            i = i + 1 + int(c[-1]) if len(c) else i + 1
+        return p[out]
+
+    @staticmethod
+    def _line_frame(p, step=STEP_M, smooth=5):
+        """点の並びを step おきにしてならし（両端は動かさない）、(x, y, 左向きの nx, ny)"""
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(p, axis=0).T))))
+        m = max(2, int(math.ceil(s[-1] / step)) + 1)
+        ss = np.linspace(0.0, s[-1], m)
+        x, y = np.interp(ss, s, p[:, 0]), np.interp(ss, s, p[:, 1])
+        if m >= smooth + 2:
+            k = smooth // 2
+            x = np.convolve(np.r_[np.full(k, x[0]), x, np.full(k, x[-1])], np.ones(smooth) / smooth, 'valid')
+            y = np.convolve(np.r_[np.full(k, y[0]), y, np.full(k, y[-1])], np.ones(smooth) / smooth, 'valid')
+        tx, ty = np.gradient(x), np.gradient(y)
+        L = np.hypot(tx, ty)
+        L[L == 0] = 1.0
+        return x, y, -ty / L, tx / L
+
+    def pit_lane(self, lat, lon, edge_lines, t_all, lat_all, lon_all, speed_all=None):
+        """走行の測位から、ピットロード（中心線と左右の縁）を作る（SP-10-36）。
+        lat・lon：案内にする周（コースの線）。edge_lines：コースの縁（[[lat, lon], …] のリスト）。
+        1. 各測位を案内の線の横断面へ下ろし、コースの縁より PIT_EDGE_M 外を「コースの外」とする（縁が無い所は、走った幅より PIT_SLACK_M 外）
+        2. コースの外の続き（PIT_JOIN_S より短い戻りはつなぐ。止まっている時間も入れる）のうち、PIT_MIN_M より長く動き、
+           PIT_FAR_M より外まで出たものを候補にし、コースを出た所（入口）・戻った所（出口）がいちばん多く重なる所をピットの入口・出口とする。
+           入口か出口がそこに合う続きがピットを通った回（走行の頭・終わりの、入るだけ・出るだけも数える）
+        3. 通った回を升目に重ね、入口から出口まで通った升目だけを通る短い道を案内にし（ガレージへの寄り道は入らない）、
+           通った回の点を案内の縦の位置でそろえて、横の位置の中央値を中心線にする（2回）
+        4. 中心線から左右へ航空写真の舗装の切れ目を測って幅にし、その所の線を写真の境目へ吸い付かせて左右の縁にする（inside=0）。
+           コースの中へ入った所は切る
+        返り値 {lines: [左の縁, 右の縁]（[[lat, lon], …]）, center, passes: 通った回の数, found: 縁が見つかった割合, width_m: [左, 右]}"""
+        if t_all is None or lat_all is None or lon_all is None:
+            raise OutlineError('走行の測位が無いので、ピットロードを作れません')
+        origin, gx, gy, nx, ny = guide(lat, lon)
+        lat0, lon0 = origin
+        kx = M_PER_DEG * math.cos(math.radians(lat0))
+        t, la, lo = np.asarray(t_all, float), np.asarray(lat_all, float), np.asarray(lon_all, float)
+        ok = np.isfinite(t) & np.isfinite(la) & np.isfinite(lo)
+        order = np.argsort(t[ok], kind='stable')
+        t, la, lo = t[ok][order], la[ok][order], lo[ok][order]
+        px, py = (lo - lon0) * kx, (la - lat0) * M_PER_DEG
+        dt = np.diff(t)
+        ds = np.hypot(np.diff(px), np.diff(py))
+        cont = (dt > 0) & (dt <= 2.0)                   # 続いている測位のあいだ
+        if speed_all is not None:
+            v = np.asarray(speed_all, float)[ok][order]
+            v = np.where(np.isfinite(v), v, 0.0)
+        else:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                vs = np.where(cont, ds / dt * 3.6, np.nan)
+            v = np.nan_to_num(np.fmax(np.r_[np.nan, vs], np.r_[vs, np.nan]))
+        # 1. コースの外
+        used = self.used_width(origin, gx, gy, nx, ny, t, la, lo, q=PIT_USED_Q)
+        segs = self._local_segs(origin, edge_lines)
+        d = self.ray_hits(gx, gy, nx, ny, ny, -nx, segs) if len(segs) else np.full((len(gx), 2), np.nan)
+        corr = np.where(np.isfinite(d), d + PIT_EDGE_M, used + PIT_SLACK_M)
+        k, o = self._project(px, py, gx, gy, nx, ny)
+        excess = np.maximum(o - corr[k, 0], -o - corr[k, 1])
+        off = excess > 0
+        # 2. 続き
+        idx = np.flatnonzero(off)
+        if not len(idx):
+            raise OutlineError('コースの外を通った測位がありません（ピットに入った周が無い）')
+        cut = np.flatnonzero(np.diff(t[idx]) > PIT_JOIN_S) + 1
+        runs = []
+        for r in np.split(idx, cut):
+            a, b = int(r[0]), int(r[-1])
+            mv = v[a:b + 1] >= PIT_STOP_KMH
+            step_ok = cont[a:b] & mv[1:]
+            length = float(ds[a:b][step_ok].sum())
+            if length < PIT_MIN_M or excess[a:b + 1].max() < PIT_FAR_M:
+                continue
+            entry = (px[a], py[a]) if a > 0 and cont[a - 1] and not off[a - 1] else None
+            exit_ = (px[b], py[b]) if b + 1 < len(t) and cont[b] and not off[b + 1] else None
+            stop_s = float(dt[a:b][cont[a:b] & ~mv[1:]].sum())
+            seg = np.arange(a, b + 1)[mv]
+            runs.append({'a': a, 'b': b, 'entry': entry, 'exit': exit_, 'stop_s': stop_s, 'xy': np.stack((px[seg], py[seg]), axis=1)})
+        if not runs:
+            raise OutlineError('ピットに入った・出た通過が見つかりません（コースの外を長く通った所が無い）')
+
+        def cluster(key):
+            pts = [(i, r[key]) for i, r in enumerate(runs) if r[key] is not None]
+            best, score = [], (0, 0.0)
+            group = list(range(len(pts)))           # PIT_END_M の内でつながるものを1つの所に（出口の道がコースに沿って長く合流するので、続きでつなぐ）
+            for x in range(len(pts)):
+                for y in range(x + 1, len(pts)):
+                    if math.hypot(pts[x][1][0] - pts[y][1][0], pts[x][1][1] - pts[y][1][1]) <= PIT_END_M:
+                        gx_, gy_ = group[x], group[y]
+                        group = [gx_ if g_ == gy_ else g_ for g_ in group]
+            for gid in set(group):
+                mem = [pts[x][0] for x in range(len(pts)) if group[x] == gid]
+                sc = (len(mem), sum(runs[j]['stop_s'] for j in mem))
+                if sc > score:
+                    best, score = mem, sc
+            return best
+        ein, eout = cluster('entry'), cluster('exit')
+        if not ein or not eout:
+            raise OutlineError('ピットの入口か出口が見つかりません（入って出た通過が無い）')
+        pit = sorted(set(ein) | set(eout))
+        if len(pit) < PIT_MIN_PASSES:
+            raise OutlineError(f'ピットを通った回が{len(pit)}回だけなので、ピットロードを作りません（{PIT_MIN_PASSES}回から）')
+        start = np.median([runs[i]['entry'] for i in ein], axis=0)
+        goal = np.median([runs[i]['exit'] for i in eout], axis=0)
+        xy = [runs[i]['xy'] for i in pit if len(runs[i]['xy'])]
+        # 3. 案内の道と、縦の位置でそろえた中心線
+        route = self._cut_loops(self._route(xy, start, goal))
+        if len(route) < 10:
+            raise OutlineError('ピットロードが短すぎます')
+        cx, cy, cnx, cny = self._line_frame(route)
+        for _ in range(2):
+            m = len(cx)
+            per = np.full((len(xy), m), np.nan)
+            for ri, p in enumerate(xy):
+                j, q = self._project(p[:, 0], p[:, 1], cx, cy, cnx, cny)
+                along = np.abs((p[:, 0] - cx[j]) * cny[j] - (p[:, 1] - cy[j]) * cnx[j])    # 縦のずれ（端の外の点）
+                use = (np.abs(q) <= PIT_LAT_M) & (along <= STEP_M)
+                for jj in np.unique(j[use]):
+                    per[ri, jj] = float(np.median(q[use & (j == jj)]))
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                off_c = np.nanmedian(per, axis=0)
+            have = np.isfinite(off_c)
+            if have.sum() < 2:
+                raise OutlineError('ピットの通過の線がそろいません')
+            off_c = np.interp(np.arange(m), np.flatnonzero(have), off_c[have])
+            if m >= 11:
+                off_c = np.convolve(np.r_[np.full(4, off_c[0]), off_c, np.full(4, off_c[-1])], np.ones(9) / 9, 'valid')
+            cx, cy, cnx, cny = self._line_frame(np.stack((cx + cnx * off_c, cy + cny * off_c), axis=1))
+        # 4. 左右の縁
+        m = len(cx)
+        need = np.ones((m, 2), bool)
+        tmin = np.full((m, 2), 1.0)
+        tmax = np.full((m, 2), PIT_W_MAX_M)
+        wd, _okp = self.photo_edges(origin, cx, cy, cnx, cny, need, tmin, tmax)
+        width = []
+        for side in (0, 1):
+            w = wd[:, side]
+            g = float(np.nanmedian(w)) if np.isfinite(w).mean() >= 0.3 else PIT_W_DEF_M
+            sm = _median_open(w, 15)
+            w = np.where(np.isfinite(sm), sm, g)
+            width.append(np.clip(w, PIT_W_MIN_M, PIT_W_MAX_M))
+
+        def ll(x, y):
+            return [[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(x, y)]
+        lines_, found = [], []
+        for side, sg in ((0, 1.0), (1, -1.0)):
+            hx, hy = cx + sg * cnx * width[side], cy + sg * cny * width[side]
+            q = sg * width[side]
+            try:
+                r = self.snap(ll(hx, hy), 0, None, PIT_SNAP_REACH_M)
+                f = r['found']
+                p = np.asarray(r['pts'], float)
+                sx, sy = (p[:, 1] - lon0) * kx, (p[:, 0] - lat0) * M_PER_DEG
+                # 吸い付いた線を中心線からの距離に直してならす（ガレージの屋根・止まっている車で細かく揺れるので）
+                j = np.argmin((cx[:, None] - sx[None, :]) ** 2 + (cy[:, None] - sy[None, :]) ** 2, axis=1)
+                qs = (sx[j] - cx) * cnx + (sy[j] - cy) * cny
+                qs = np.where(np.abs(qs - q) <= PIT_SNAP_REACH_M + 0.5, qs, q)
+                q = _mean_open(_median_open(qs, PIT_EDGE_SMOOTH), 5)
+            except OutlineError:
+                f = 0.0
+            found.append(f)
+            ex, ey = cx + cnx * q, cy + cny * q
+            pts = ll(ex, ey)
+            # コースの中へ入った所は切る（コースの縁と重ねて描かない）
+            ke, oe = self._project(ex, ey, gx, gy, nx, ny)
+            inner = np.where(np.isfinite(d), d, used + PIT_SLACK_M)
+            keep = (oe > inner[ke, 0]) | (-oe > inner[ke, 1])
+            for rr in np.split(np.arange(len(keep)), np.flatnonzero(np.diff(keep.astype(int)) != 0) + 1):
+                if keep[rr[0]] and len(rr) >= PIT_MIN_PIECE:
+                    lines_.append([pts[i] for i in rr])
+        if not lines_:
+            raise OutlineError('ピットロードの縁がコースの中にしかありません')
+        return {'lines': lines_, 'center': ll(cx, cy), 'passes': len(pit), 'found': round(float(np.mean(found)), 3),
+                'width_m': [round(float(np.median(w)), 1) for w in width]}
+
     def build(self, lat, lon, t_all=None, lat_all=None, lon_all=None):
         """lat・lon：案内にする周。t_all・lat_all・lon_all：走行の全部の測位（縁がコースの中を通っていないかを見る）。
         1回目は案内の周の線から縁を測り、そこからコースの真ん中の線を出して、2回目は真ん中から測り直す"""
@@ -1015,6 +1327,15 @@ class Outlines:
                 xs, ys = gx[run] + sg * nx[run] * c, gy[run] + sg * ny[run] * c
                 kerbs.append({'w': ZEBRA_W_M,
                               'pts': [[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(xs, ys)]})
-        return {'version': VERSION, 'lines': lines, 'kerbs': kerbs, 'share': share, 'attribution': ATTRIBUTION,
-                'complete': bool(ok_v and ok_p),
+        kinds = ['edge'] * len(lines)
+        try:                                # ピットロード（SP-10-36）。作れなくてもコース図は出す
+            pit = self.pit_lane(lat, lon, lines, t_all, lat_all, lon_all)
+            lines = lines + pit['lines']
+            kinds = kinds + ['pit'] * len(pit['lines'])
+            pit_info = {'passes': pit['passes'], 'found': pit['found'], 'width_m': pit['width_m']}
+        except OutlineError as e:
+            pit_info = {'passes': 0, 'error': str(e)}
+        self._pcache = {}
+        return {'version': VERSION, 'lines': lines, 'kinds': kinds, 'kerbs': kerbs, 'share': share, 'attribution': ATTRIBUTION,
+                'complete': bool(ok_v and ok_p), 'pit': pit_info,
                 'width_m': [round(float(np.nanpercentile(width, q)), 1) for q in (5, 50, 95)] if np.isfinite(width).any() else None}

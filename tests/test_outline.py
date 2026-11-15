@@ -14,10 +14,52 @@ from ecoanalysis import mvt, outline  # noqa: E402
 LAT0, LON0 = 38.14, 140.78
 KX = outline.M_PER_DEG * math.cos(math.radians(LAT0))
 R_IN, R_OUT, R_CAR = 94.0, 106.0, 100.0     # 円いコース：内側の縁・外側の縁・走った線の半径（m）
+PIT_R = 116.0                               # ピットロードの真ん中の半径（東の外、角度 ±0.4 rad）
 
 
 def to_latlon(x, y):
     return LAT0 + np.asarray(y) / outline.M_PER_DEG, LON0 + np.asarray(x) / KX
+
+
+def pit_radius(a):
+    """ピットを通る周の半径：-0.55〜-0.4 rad でコースから出て、±0.4 rad は PIT_R、0.4〜0.55 rad でコースへ戻る"""
+    a = np.asarray(a, float)
+    up = np.clip((a + 0.55) / 0.15, 0, 1)
+    down = np.clip((0.55 - a) / 0.15, 0, 1)
+    return R_CAR + (PIT_R - R_CAR) * np.minimum(up, down)
+
+
+def drive(t0, laps, pit=False, stop_s=0.0, spur=False, jitter=0.0, seed=0):
+    """(-π から左回りに) laps 周走った測位 (t, lat, lon)。0.1 秒おき、コースは 30 m/s、ピットロードは 15 m/s。
+    pit：最後の周でピットを通る。stop_s：ピットの真ん中（0 rad）で止まる秒。spur：止まる前に外（半径 128 m）へ寄り道して戻る"""
+    rng = np.random.default_rng(seed)
+    xs, ys = [], []
+    for k in range(laps):
+        a = np.linspace(-math.pi, math.pi, 4000, endpoint=False)
+        r = pit_radius(a) if (pit and k == laps - 1) else np.full_like(a, R_CAR)
+        r = r + jitter * rng.standard_normal() * np.ones_like(a)
+        x, y = r * np.cos(a), r * np.sin(a)
+        if pit and k == laps - 1 and (stop_s or spur):
+            i = int(np.argmin(np.abs(a)))
+            extra = [np.full(int(stop_s * 10), x[i]), np.full(int(stop_s * 10), y[i])]
+            if spur:
+                rr = np.r_[np.linspace(PIT_R, 128.0, 80), np.full(int(stop_s * 10), 128.0), np.linspace(128.0, PIT_R, 80)]
+                extra = [rr * math.cos(0.1), rr * math.sin(0.1)]
+                i = int(np.argmin(np.abs(a - 0.1)))
+            x = np.r_[x[:i], extra[0], x[i:]]
+            y = np.r_[y[:i], extra[1], y[i:]]
+        xs.append(x)
+        ys.append(y)
+    x, y = np.concatenate(xs), np.concatenate(ys)
+    seg = np.r_[0.0, np.hypot(np.diff(x), np.diff(y))]
+    rad = np.hypot(x, y)
+    v = np.where(rad > R_OUT + 1, 15.0, 30.0)
+    dt = np.where(seg < 1e-6, 0.1, seg / v)
+    t = t0 + np.cumsum(dt)
+    # 0.1 秒おきに並べ直す
+    tt = np.arange(t[0], t[-1], 0.1)
+    la, lo = to_latlon(np.interp(tt, t, x), np.interp(tt, t, y))
+    return tt, la, lo
 
 
 def circle(r, a0=0.0, a1=2 * math.pi, n=400):
@@ -70,9 +112,10 @@ def encode_tile(lines, z, X, Y, ftcode=2201, level='2500', ext=4096):
 
 class Photos:
     """航空写真の代わり：半径 R_IN〜R_OUT を灰色の舗装、ほかを草の緑にした JPEG"""
-    def __init__(self, offline=False, kerb=False):
+    def __init__(self, offline=False, kerb=False, pit=False):
         self.offline = offline
         self.kerb = kerb
+        self.pit = pit
         self.calls = 0
 
     def get(self, z, x, y):
@@ -86,6 +129,10 @@ class Photos:
         img = np.zeros((256, 256, 3), np.uint8)
         img[...] = (90, 100, 82)
         img[(r > R_IN) & (r < R_OUT)] = (100, 102, 106)
+        if self.pit:        # 東の外にピットロード（半径 PIT_R ± 3 m の舗装）と、コースとつなぐ道
+            a = np.arctan2((la - LAT0) * outline.M_PER_DEG, (lo - LON0) * KX)
+            img[(np.abs(r - PIT_R) < 3) & (np.abs(a) < 0.46)] = (100, 102, 106)
+            img[(r > R_OUT) & (np.abs(r - pit_radius(a)) < 3) & (np.abs(a) > 0.38) & (np.abs(a) < 0.58)] = (100, 102, 106)
         if self.kerb:
             a = np.arctan2((la - LAT0) * outline.M_PER_DEG, (lo - LON0) * KX)
             # 外の縁のすぐ外（0.2〜0.8 rad）に赤白のゼブラ（1 m ごとに交互）。色は写真のにじんだ赤白
@@ -362,6 +409,68 @@ class OutlineTest(unittest.TestCase):
                     self.stroke(R_OUT, 0, 0.0001)):
             with self.assertRaises((outline.OutlineError, ValueError, TypeError)):
                 o.snap(bad)
+
+    # ---- ピットロード（SP-10-36）
+    def pit_data(self, passes=3, spur=False):
+        parts = [drive(0.0, 20, jitter=0.4, seed=1)]          # ピットを通る回は1割より少なく（コースの縁の USED_Q）
+        for k in range(passes):
+            parts.append(drive(10000.0 * (k + 1), 2, pit=True, stop_s=60.0 if k == 0 else 0.0, spur=spur and k == 1, seed=k + 2))
+        return [np.concatenate(x) for x in zip(*parts)]
+
+    def test_pit_lane_from_passes(self):
+        o = outline.Outlines(self.tmp.name, Photos(pit=True), fetch=self.fetch)
+        la, lo = circle(R_CAR, -math.pi, math.pi, 800)
+        t, a, b = self.pit_data(3, spur=True)
+        edges = [np.stack(circle(R_IN, 0, 2 * math.pi, 800), axis=1).tolist(), np.stack(circle(R_OUT, 0, 2 * math.pi, 800), axis=1).tolist()]
+        r = o.pit_lane(la, lo, edges, t, a, b)
+        self.assertEqual(r['passes'], 3)
+        c = np.asarray(r['center'])
+        ang = np.arctan2((c[:, 0] - LAT0) * outline.M_PER_DEG, (c[:, 1] - LON0) * KX)
+        rc = self.radius_of(r['center'])
+        mid = np.abs(ang) < 0.35
+        self.assertGreater(mid.sum(), 10)
+        self.assertLess(np.abs(rc[mid] - PIT_R).max(), 0.6)         # ガレージへの寄り道（半径 128 m）には曲がらない
+        self.assertLess(rc.max(), PIT_R + 1.0)
+        self.assertLess(ang.min(), -0.45)                            # 入口から出口まで
+        self.assertGreater(ang.max(), 0.45)
+        rs = np.concatenate([self.radius_of(ln) for ln in r['lines']])
+        self.assertGreater(rs.min(), R_OUT)                          # コースの中には描かない
+        inner, outer = rs[rs < PIT_R], rs[rs > PIT_R]
+        self.assertLess(np.median(np.abs(inner - (PIT_R - 3))), 0.6)
+        self.assertLess(np.median(np.abs(outer - (PIT_R + 3))), 0.6)
+        self.assertGreater(r['found'], 0.5)
+
+    def test_pit_lane_needs_passes(self):
+        o = outline.Outlines(self.tmp.name, Photos(pit=True), fetch=self.fetch)
+        la, lo = circle(R_CAR, -math.pi, math.pi, 800)
+        edges = [np.stack(circle(R_IN, 0, 2 * math.pi, 800), axis=1).tolist(), np.stack(circle(R_OUT, 0, 2 * math.pi, 800), axis=1).tolist()]
+        t, a, b = self.pit_data(0)
+        with self.assertRaisesRegex(outline.OutlineError, 'ピット'):
+            o.pit_lane(la, lo, edges, t, a, b)
+        t, a, b = self.pit_data(1)
+        with self.assertRaisesRegex(outline.OutlineError, '1回だけ'):
+            o.pit_lane(la, lo, edges, t, a, b)
+        with self.assertRaises(outline.OutlineError):
+            o.pit_lane(la, lo, edges, None, None, None)
+
+    def test_auto_outline_gets_pit_lines(self):
+        o = outline.Outlines(self.tmp.name, Photos(pit=True), fetch=self.fetch)
+        la, lo = circle(R_CAR, -math.pi, math.pi, 800)
+        t, a, b = self.pit_data(2)
+        out = o.build(la, lo, t, a, b)
+        self.assertEqual(len(out['kinds']), len(out['lines']))
+        self.assertIn('pit', out['kinds'])
+        self.assertEqual(out['pit']['passes'], 2)
+        edge = [ln for ln, k in zip(out['lines'], out['kinds']) if k == 'edge']
+        rs = np.concatenate([self.radius_of(ln) for ln in edge])
+        self.assertLess(np.median(np.abs(rs[rs > R_CAR] - R_OUT)), 0.5)   # コースの縁はピットを数えずに作る
+        outline.check_edit({'lines': out['lines'], 'kinds': out['kinds']})
+        # ピットを通っていなければ、コース図は出してピットロードは無い
+        t, a, b = self.pit_data(0)
+        out = o.build(la, lo, t, a, b)
+        self.assertNotIn('pit', out['kinds'])
+        self.assertEqual(out['pit']['passes'], 0)
+        self.assertTrue(out['pit']['error'])
 
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)

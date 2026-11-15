@@ -341,6 +341,19 @@ const yAt = (pts, x, y0) => pts.filter((p) => Math.abs(p[0] - x) < 0.01 && Math.
   out.dumpKinds = E.dump(id).kinds;
   E.load({ lines: [ring], kinds: ['nope'], kerbs: [], boards: [] }, id, ui);
   out.badKind = E.view().lines[0].kind;
+  // ピットロードを足す（SP-10-36）：足す・置き換える・ひとつ戻す。送るコースの縁は輪を閉じた形
+  E.load({ lines: [ring, open], kinds: ['edge', 'pit'], kerbs: [], boards: [] }, id, ui);
+  out.edgeOf = E.linesOf('edge').map((l) => [l.length, l[0].join() === l[l.length - 1].join()]);
+  const pitA = [[0, 200], [50, 200], [100, 200]], pitB = [[0, 210], [100, 210]];
+  out.addN = E.addLines([pitA, pitB, [[1, 1]]], 'pit', false);
+  out.afterAdd = E.view().lines.map((l) => l.kind);
+  out.addDirty = E.dirty();
+  E.undo();
+  out.addUndo = E.view().lines.length;
+  out.replN = E.addLines([pitA], 'pit', true);
+  out.afterRepl = E.view().lines.map((l) => [l.kind, l.pts[0][1]]);
+  out.addNone = E.addLines([], 'pit', true);
+  out.noneKeeps = E.view().lines.length;
   console.log(JSON.stringify(out));
 })();
 '''
@@ -388,6 +401,15 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(o['joinKinds'], ['edge', 'other'])
         self.assertEqual(o['dumpKinds'], ['edge', 'other'])
         self.assertEqual(o['badKind'], 'edge')
+        self.assertEqual(o['edgeOf'], [[201, True]])
+        self.assertEqual(o['addN'], 2)                                    # 1点だけの線は足さない
+        self.assertEqual(o['afterAdd'], ['edge', 'pit', 'pit', 'pit'])
+        self.assertTrue(o['addDirty'])
+        self.assertEqual(o['addUndo'], 2)
+        self.assertEqual(o['replN'], 1)
+        self.assertEqual(o['afterRepl'], [['edge', 0], ['pit', 200]])      # 前のピットロードの線は消えた
+        self.assertEqual(o['addNone'], 0)
+        self.assertEqual(o['noneKeeps'], 2)                               # 足すものが無ければ消さない
 
 
 if __name__ == '__main__':

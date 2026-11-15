@@ -776,6 +776,27 @@ $('oesave').onclick = async () => {
   if (!s || !state.outedit) return;
   if (await outlineRequest('save', { id: s.id, outline: OutlineEditor.dump(CourseMap.toLatLon) })) status('直したコース図を保存しました（このコースでは次からこちらが出ます）', 'ok');
 };
+// ピットロードを足す（SP-10-36）：直している途中のコースの縁を裏へ送り、その外を通ったピットの通過から作った線を足す
+$('oepit').onclick = async () => {
+  const s = state.refSession;
+  if (!s || !state.outedit) return;
+  const had = OutlineEditor.linesOf('pit').length;
+  const replace = had > 0 && confirm(`前からあるピットロードの線が${had}本あります。消して置き換えますか？（キャンセルなら残したまま足します）`);
+  const btn = $('oepit');
+  btn.disabled = true;
+  status('ピットに入って出た通過から、ピットロードを作っています（十数秒かかります）…', 'ok');
+  let j;
+  try {
+    j = await api('outline/pit', { id: s.id, edges: OutlineEditor.linesOf('edge').map((pts) => pts.map((q) => CourseMap.toLatLon(q[0], q[1]))) });
+  } catch (e) { j = { ok: false, error: '裏の処理とつながっていません' }; }
+  btn.disabled = false;
+  if (!state.outedit) return;
+  if (!j.ok) { status(`ピットロードを作れません（${j.error}）`, 'ng'); return; }
+  const n = OutlineEditor.addLines(j.pit.lines.map((ln) => ln.map((q) => CourseMap.toXY(q[0], q[1]))), 'pit', replace);
+  CourseMap.redraw();
+  status(`ピットロードの縁を${n}本足しました（ピットを通った${j.pit.passes}回から。写真の境目が見つかった所 ${Math.round(j.pit.found * 100)} %）。` +
+         `コースの縁と重なる所は描いていません。よければ「保存」を押してください`, 'ok');
+};
 $('oereset').onclick = async () => {
   const s = state.refSession;
   if (!s || !confirm('手で直したコース図を消して、自動で作ったものに戻しますか？（消した分は戻せません）')) return;

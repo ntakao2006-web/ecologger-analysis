@@ -179,6 +179,13 @@ class ServerTest(unittest.TestCase):
             code, j = self.api('outline/reset', {'id': sid})
             self.assertEqual(code, 200, j)
             self.assertFalse(j['outline'].get('edited'))
+            # ピットロード（SP-10-36）：作りものの走行はピットを通っていないので、理由を返して断る。形が違えば 400
+            code, j = self.api('outline/pit', {'id': sid, 'edges': [ln]})
+            self.assertEqual(code, 400, j)
+            self.assertIn('ピット', j['error'])
+            self.assertEqual(self.api('outline/pit', {'id': sid, 'edges': [[[1, 2]]]})[0], 400)
+            self.assertEqual(self.api('outline/pit', {'id': sid, 'edges': 'x'})[0], 400)
+            self.assertEqual(self.api('outline/pit', {'id': 's999'})[0], 400)
             self.api('close', {'id': sid})
         finally:
             store.outlines = real

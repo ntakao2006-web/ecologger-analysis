@@ -225,6 +225,18 @@ class Store:
         self.outlines.save_edit(course, la, lo, data, (auto or {}).get('width_m'))
         return self.outline(sid)
 
+    def outline_pit(self, sid, edges=None):
+        """ピットロードの線を走行の測位から作る（SP-10-36。手で直したコース図へ足すため。残さない）。
+        edges：コースの縁（エディタで直している途中のもの。無ければいまのコース図の、種類がコースの縁の線）"""
+        course, la, lo, t_all, la_all, lo_all, _n = self._outline_inputs(sid)
+        if edges is None:
+            o = self.outline(sid)
+            kinds = o.get('kinds') or ['edge'] * len(o['lines'])
+            edges = [ln for ln, k in zip(o['lines'], kinds) if k == 'edge']
+        else:
+            edges = outline.check_edit({'lines': edges})['lines']
+        return self.outlines.pit_lane(la, lo, edges, t_all, la_all, lo_all)
+
     def outline_reset(self, sid):
         """手で直したものを消して、自動のものへ戻す"""
         course, la, lo, *_ = self._outline_inputs(sid)
@@ -592,6 +604,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': True, **self.store.outlines.snap(pts, inside, None, reach)})
             except (outline.OutlineError, TypeError, ValueError) as e:
                 return self._json({'ok': False, 'error': str(e) if isinstance(e, outline.OutlineError) else 'なぞった線の形が違う'}, 400)
+        if path == '/api/outline/pit':           # ピットロードを測位から作る（SP-10-36）。手で直したコース図へ足す
+            sid, edges = body.get('id'), body.get('edges')
+            if not isinstance(sid, str) or not (edges is None or isinstance(edges, list)):
+                return self._json({'ok': False, 'error': 'id・edges の形が違う'}, 400)
+            try:
+                return self._json({'ok': True, 'pit': self.store.outline_pit(sid, edges)})
+            except KeyError as e:
+                return self._json({'ok': False, 'error': str(e.args[0])}, 400)
+            except outline.OutlineError as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
         if path in ('/api/outline', '/api/outline/save', '/api/outline/reset'):
             sid, rebuild = body.get('id'), bool(body.get('rebuild'))
             if not isinstance(sid, str):

@@ -759,9 +759,27 @@ const OutlineEditor = (() => {
     st.pend = null; st.grab = null; st.hover = null; st.trace = null; st.busy = [];
   }
 
+  // ピットロードを足す（SP-10-36）：裏が測位から作った線 lines（m の点の並び）を種類 kind で足す。
+  // replace なら、前からあるその種類の線を消してから足す（ひとつ戻すで戻せる）。足した本数
+  function addLines(lines, kind, replace) {
+    if (!st) return 0;
+    const add = (lines || []).filter((pts) => Array.isArray(pts) && pts.length >= 2);
+    if (!add.length) return 0;
+    snapshot();
+    if (replace) st.lines = st.lines.filter((l) => l.kind !== kind);
+    for (const pts of add) st.lines.push({ pts: pts.map((q) => q.slice()), closed: false, kind: kindOf(kind) });
+    st.pend = null; st.grab = null;
+    changed();
+    return add.length;
+  }
+  // 種類 kind の線（m の点の並び。輪の線は頭の点を終わりにも足す）
+  function linesOf(kind) {
+    return st ? st.lines.filter((l) => l.kind === kind && l.pts.length >= 2).map((l) => (l.closed ? l.pts.concat([l.pts[0]]) : l.pts)) : [];
+  }
+
   return {
     TOOLS, GESTURE, remap,
-    load, dump, view, undo, redo, down, move, up, click, hoverAt, overlay, applyTrace,
+    load, dump, view, undo, redo, down, move, up, click, hoverAt, overlay, applyTrace, addLines, linesOf,
     active: () => !!st,
     stop() { st = null; },
     dirty: () => !!(st && st.dirty),
