@@ -98,6 +98,15 @@ E.click(...arc[15], geo); E.click(...arc[45], geo);
 const after = E.view().lines[0].pts, moved = after.map((p, i) => Math.hypot(p[0] - arc[i][0], p[1] - arc[i][1]));
 out.smoothSpan = { outside: Math.max(...moved.slice(0, 16), ...moved.slice(45)), inside: sd(rads(after.slice(22, 39))), insideBefore: sd(rads(arc.slice(22, 39))) };
 out.smoothUndo = E.undo() && E.view().lines[0].pts.every((p, i) => p[0] === arc[i][0] && p[1] === arc[i][1]);
+// やり直す：戻した分をもう一度。新しく直すと、やり直しの分は消える
+out.redo = { can: E.canRedo(), done: E.redo(), moved: E.view().lines[0].pts[30][0] !== arc[30][0], after: E.canRedo() };
+E.undo();
+E.setTool('straight'); E.click(...arc[10], geo); E.click(...arc[20], geo);
+out.redoCleared = !E.canRedo();
+// 押しかけの取り消しと、ジェスチャーの道具の並び
+E.setTool('erase'); E.click(...arc[5], geo);
+out.cancel = [E.cancelPending(), E.cancelPending()];
+out.gesture = E.GESTURE.map((g) => g[0]);
 
 // 原点が変わったとき：点も戻す分も移る
 fresh();
@@ -153,6 +162,13 @@ class OutlineEditorTest(unittest.TestCase):
         self.assertEqual(p['outside'], 0)                      # 区間の外と両端は動かない
         self.assertLess(p['inside'], p['insideBefore'] / 3)
         self.assertTrue(self.o['smoothUndo'])
+
+    def test_redo_cancel_and_gesture_order(self):
+        self.assertEqual(self.o['redo'], {'can': True, 'done': True, 'moved': True, 'after': False})
+        self.assertTrue(self.o['redoCleared'])
+        self.assertEqual(self.o['cancel'], [True, False])
+        # 8つの道具が1つずつ、ボタン・数字キーと同じ順
+        self.assertEqual(self.o['gesture'], ['move', 'smooth', 'straight', 'join', 'erase', 'zebraAdd', 'zebraDel', 'board'])
 
     def test_remap(self):
         self.assertEqual(self.o['remap'], {'lat': 35, 'lon': 5, 'text': '100'})

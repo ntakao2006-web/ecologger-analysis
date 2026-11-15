@@ -17,6 +17,11 @@ const OutlineEditor = (() => {
     zebraDel: '消したいゼブラを押します',
     board: '押した所に看板（字は下の欄）を置きます。看板を押すと消します',
   };
+  // 道具の切り替え：図の上で右ボタンを押したまま引いた向き（上から時計回りに8つ）。数字キーの 1〜8 も同じ順
+  const GESTURE = [
+    ['move', '点を動かす'], ['smooth', 'なめらかに'], ['straight', 'まっすぐ'], ['join', 'つなぐ'],
+    ['erase', '消す'], ['zebraAdd', 'ゼブラを足す'], ['zebraDel', 'ゼブラを消す'], ['board', '看板'],
+  ];
 
   let st = null;             // {lines: [{pts, closed}], kerbs: [{w, pts}], boards: [{x, y, text}], undo: [], tool, pend, grab, hover, dirty}
   let ui = null;             // {radius(), zebraW(), boardText(), onChange()}
@@ -35,7 +40,7 @@ const OutlineEditor = (() => {
     });
     const kerbs = (outline.kerbs || []).filter((z) => z && z.pts && z.pts.length >= 2).map((z) => ({ w: z.w || 1, pts: xy(z.pts) }));
     const boards = (outline.boards || []).map((b) => { const [x, y] = toXY(b.lat, b.lon); return { x, y, text: b.text }; });
-    st = { lines, kerbs, boards, undo: [], tool: 'move', pend: null, grab: null, hover: null, dirty: false };
+    st = { lines, kerbs, boards, undo: [], redo: [], tool: 'move', pend: null, grab: null, hover: null, dirty: false };
   }
 
   function dump(toLatLon) {
@@ -50,16 +55,28 @@ const OutlineEditor = (() => {
   // いまの中身（図へ描く形）
   function view() { return st && { lines: st.lines, kerbs: st.kerbs, boards: st.boards }; }
 
+  const stateNow = () => JSON.stringify({ lines: st.lines, kerbs: st.kerbs, boards: st.boards });
   function snapshot() {
-    st.undo.push(JSON.stringify({ lines: st.lines, kerbs: st.kerbs, boards: st.boards }));
+    st.undo.push(stateNow());
     if (st.undo.length > UNDO_MAX) st.undo.shift();
+    st.redo = [];                    // 新しく直したら、やり直しの分は捨てる
   }
   function changed() { st.dirty = true; if (ui && ui.onChange) ui.onChange(); }
-  function undo() {
-    if (!st || !st.undo.length) return false;
-    const o = JSON.parse(st.undo.pop());
+  function restore(json) {
+    const o = JSON.parse(json);
     st.lines = o.lines; st.kerbs = o.kerbs; st.boards = o.boards; st.pend = null; st.grab = null;
     changed();
+  }
+  function undo() {
+    if (!st || !st.undo.length) return false;
+    st.redo.push(stateNow());
+    restore(st.undo.pop());
+    return true;
+  }
+  function redo() {
+    if (!st || !st.redo.length) return false;
+    st.undo.push(stateNow());
+    restore(st.redo.pop());
     return true;
   }
 
@@ -263,6 +280,7 @@ const OutlineEditor = (() => {
     if (!st || st.tool !== 'move') return false;
     const p = pickVertex(x, y, tolM(geo), ['line', 'kerb']);
     if (!p) return false;
+    const keepRedo = st.redo;
     snapshot();
     const it = itemOf(p), n = it.pts.length, closed = isClosed(p);
     // つかんだ点からの、線に沿った距離（輪なら近いほうの向きで）
@@ -277,7 +295,7 @@ const OutlineEditor = (() => {
       for (let k = p.i + 1; k < n; k++) s[k] = s[k - 1] + dist(it.pts[k - 1], it.pts[k]);
       for (let k = p.i - 1; k >= 0; k--) s[k] = s[k + 1] + dist(it.pts[k + 1], it.pts[k]);
     }
-    st.grab = { p, x0: x, y0: y, orig: it.pts.map((q) => q.slice()), s, R: Math.max(0, ui.radius()) };
+    st.grab = { p, x0: x, y0: y, orig: it.pts.map((q) => q.slice()), s, R: Math.max(0, ui.radius()), keepRedo };
     return true;
   }
 
@@ -296,7 +314,7 @@ const OutlineEditor = (() => {
     const g = st.grab;
     st.grab = null;
     const it = itemOf(g.p);
-    if (dist(it.pts[g.p.i], g.orig[g.p.i]) < 1e-6) st.undo.pop(); else changed();
+    if (dist(it.pts[g.p.i], g.orig[g.p.i]) < 1e-6) { st.undo.pop(); st.redo = g.keepRedo; } else changed();   // 動かさなければ無かったことに
   }
 
   // 押して離した（動かさずに）
@@ -324,11 +342,12 @@ const OutlineEditor = (() => {
       if (p) { snapshot(); st.kerbs.splice(p.idx, 1); done = true; }
     } else if (t === 'board') {
       const hit = st.boards.findIndex((b) => Math.hypot(b.x - x, b.y - y) <= tol * 1.5);
+      const keepRedo = st.redo;
       snapshot();
       if (hit >= 0) st.boards.splice(hit, 1);
       else {
         const text = ui.boardText();
-        if (!text) { st.undo.pop(); return; }
+        if (!text) { st.undo.pop(); st.redo = keepRedo; return; }
         st.boards.push({ x, y, text });
       }
       done = true;
@@ -383,16 +402,20 @@ const OutlineEditor = (() => {
     };
     mv(st);
     st.undo = st.undo.map((u) => JSON.stringify(mv(JSON.parse(u))));
+    st.redo = st.redo.map((u) => JSON.stringify(mv(JSON.parse(u))));
     st.pend = null; st.grab = null; st.hover = null;
   }
 
   return {
-    TOOLS, remap,
-    load, dump, view, undo, down, move, up, click, hoverAt, overlay,
+    TOOLS, GESTURE, remap,
+    load, dump, view, undo, redo, down, move, up, click, hoverAt, overlay,
     active: () => !!st,
     stop() { st = null; },
     dirty: () => !!(st && st.dirty),
     canUndo: () => !!(st && st.undo.length),
+    canRedo: () => !!(st && st.redo.length),
+    // 押しかけの1か所目（まっすぐ・消す・つなぐ…）を取り消す。取り消したら true
+    cancelPending() { if (!st || !st.pend) return false; st.pend = null; return true; },
     tool: () => st && st.tool,
     setTool(t) { if (st && TOOLS[t]) { st.tool = t; st.pend = null; st.hover = null; } },
     // 試験用：中身の数

@@ -335,7 +335,7 @@ async function loadOutline() {
   const s = state.refSession;
   if (state.outedit && (!s || s.id !== state.outedit.sid || !$('outline').checked)) {
     stopOutlineEdit();
-    status('基準の走行が変わったので、コース図を直すのをやめました（残していない分は消えました）', 'ng');
+    status('基準の走行が変わったので、コース図を直すのをやめました（保存していない分は消えました）', 'ng');
   }
   if (!$('outline').checked || !s) { CourseMap.setOutline(null); renderOutlineControls(); return; }
   if (state.outedit && state.overlay && state.overlay.origin && state.outedit.origin.join() !== state.overlay.origin.join()) {
@@ -470,7 +470,7 @@ async function saveCalc() {
   if (!list.includes(name) && list.length < 12) list = [...list, name];     // 作った計算チャンネルはすぐ出す
   setChannels(list);
   $('calcdlg').close();
-  status(`計算チャンネル「${name}」を残しました`, 'ok');
+  status(`計算チャンネル「${name}」を保存しました`, 'ok');
   renderPicked();
 }
 
@@ -551,7 +551,7 @@ async function lineRequest(action, body) {
     if (!j.ok) { status(j.error, 'ng'); return false; }
     const byId = new Map(j.sessions.map((x) => [x.id, x]));
     state.sessions = state.sessions.map((x) => byId.get(x.id) || x);
-    status(action === 'save' ? `線の版「${body.name}」を残し、周を切り直しました` : '線を切り替え、周を切り直しました', 'ok');
+    status(action === 'save' ? `線の版「${body.name}」を保存し、周を切り直しました` : '線を切り替え、周を切り直しました', 'ok');
     render();
     return true;
   } catch (e) { status('裏の処理とつながっていません', 'ng'); return false; }
@@ -708,8 +708,9 @@ function renderOutlineControls() {
   if (!e) return;
   const t = OutlineEditor.tool();
   for (const b of document.querySelectorAll('#outedit [data-tool]')) b.classList.toggle('on', b.dataset.tool === t);
-  $('oehelp').textContent = OutlineEditor.TOOLS[t] || '';
+  $('oehelp').textContent = `${OutlineEditor.TOOLS[t] || ''}　｜　道具は図の上で右ボタンを押したまま引く向きか、1〜8 のキーでも切り替わります。Ctrl+S 保存・Ctrl+Z 戻す・Ctrl+Y やり直す・Esc 押しかけを取り消す`;
   $('oeundo').disabled = !OutlineEditor.canUndo();
+  $('oeredo').disabled = !OutlineEditor.canRedo();
   $('oesave').disabled = !OutlineEditor.dirty();
   $('oereset').hidden = !(o && o.edited);
 }
@@ -727,7 +728,7 @@ function startOutlineEdit() {
   CourseMap.setEditor(OutlineEditor);
   renderOutlineControls();
   renderLineControls();
-  status(o.edited ? '前に直したコース図を開きました' : '自動で作ったコース図を開きました。直したら「残す」を押してください', 'ok');
+  status(o.edited ? '前に直したコース図を開きました' : '自動で作ったコース図を開きました。直したら「保存」（Ctrl+S）を押してください', 'ok');
 }
 
 function stopOutlineEdit() {
@@ -741,7 +742,7 @@ function stopOutlineEdit() {
 async function outlineRequest(action, body) {
   let j;
   try { j = await api('outline/' + action, body); } catch (e) { j = { ok: false, error: '裏の処理とつながっていません' }; }
-  if (!j.ok) { status(`コース図を${action === 'save' ? '残せません' : '戻せません'}（${j.error}）`, 'ng'); return false; }
+  if (!j.ok) { status(`コース図を${action === 'save' ? '保存できません' : '戻せません'}（${j.error}）`, 'ng'); return false; }
   state.outlineData = j.outline;
   state.outlineFor = state.refSession && state.refSession.id;
   stopOutlineEdit();
@@ -750,32 +751,45 @@ async function outlineRequest(action, body) {
 }
 
 $('editoutline').onclick = startOutlineEdit;
-for (const b of document.querySelectorAll('#outedit [data-tool]')) b.onclick = () => { OutlineEditor.setTool(b.dataset.tool); renderOutlineControls(); CourseMap.redraw(); };
+function setOutlineTool(t) { OutlineEditor.setTool(t); renderOutlineControls(); CourseMap.redraw(); }
+for (const b of document.querySelectorAll('#outedit [data-tool]')) b.onclick = () => setOutlineTool(b.dataset.tool);
 $('oeundo').onclick = () => { if (OutlineEditor.undo()) CourseMap.redraw(); };
+$('oeredo').onclick = () => { if (OutlineEditor.redo()) CourseMap.redraw(); };
 $('oecancel').onclick = () => {
-  if (OutlineEditor.dirty() && !confirm('直した分を残さずにやめますか？')) return;
+  if (OutlineEditor.dirty() && !confirm('直した分を保存せずにやめますか？')) return;
   stopOutlineEdit();
   CourseMap.setOutline(state.outlineData);
 };
 $('oesave').onclick = async () => {
   const s = state.refSession;
   if (!s || !state.outedit) return;
-  if (await outlineRequest('save', { id: s.id, outline: OutlineEditor.dump(CourseMap.toLatLon) })) status('直したコース図を残しました（このコースでは次からこちらが出ます）', 'ok');
+  if (await outlineRequest('save', { id: s.id, outline: OutlineEditor.dump(CourseMap.toLatLon) })) status('直したコース図を保存しました（このコースでは次からこちらが出ます）', 'ok');
 };
 $('oereset').onclick = async () => {
   const s = state.refSession;
   if (!s || !confirm('手で直したコース図を消して、自動で作ったものに戻しますか？（消した分は戻せません）')) return;
   if (await outlineRequest('reset', { id: s.id })) status('自動で作ったコース図に戻しました', 'ok');
 };
-// Ctrl+Z：直しているときだけ（字を打つ欄の中は、その欄の戻すに任せる）
+// ショートカット。Ctrl+S：保存（コース図・線の版・計算チャンネル。画面そのものを保存する窓は出さない）。
+// コース図を直しているとき：Ctrl+Z 戻す、Ctrl+Y・Ctrl+Shift+Z やり直す、1〜8 道具（右ボタンのジェスチャーと同じ順）、Esc 押しかけを取り消す。
+// 字を打つ欄の中では、Ctrl+S のほかはその欄に任せる
 document.addEventListener('keydown', (e) => {
-  if (!state.outedit || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.shiftKey) return;
-  const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-  e.preventDefault();
-  if (OutlineEditor.undo()) CourseMap.redraw();
+  const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase(), t = e.target;
+  const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+  if (ctrl && !e.altKey && key === 's') {
+    e.preventDefault();
+    if ($('calcdlg').open) saveCalc();
+    else if (state.outedit) { if (!$('oesave').disabled) $('oesave').click(); }
+    else if (state.draft) $('saveline').click();
+    return;
+  }
+  if (!state.outedit || typing) return;
+  if (ctrl && key === 'z' && !e.shiftKey) { e.preventDefault(); if (OutlineEditor.undo()) CourseMap.redraw(); }
+  else if (ctrl && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); if (OutlineEditor.redo()) CourseMap.redraw(); }
+  else if (!ctrl && !e.altKey && /^[1-8]$/.test(e.key)) { e.preventDefault(); setOutlineTool(OutlineEditor.GESTURE[+e.key - 1][0]); }
+  else if (e.key === 'Escape' && OutlineEditor.cancelPending()) CourseMap.redraw();
 });
-// 残していない直しがあるまま閉じようとしたら聞く
+// 保存していない直しがあるまま閉じようとしたら聞く
 window.addEventListener('beforeunload', (e) => { if (state.outedit && OutlineEditor.dirty()) { e.preventDefault(); e.returnValue = ''; } });
 
 $('open').onclick = pickAndOpen;
@@ -790,6 +804,7 @@ CourseMap.init($('mapcv'), {
   onPick: (v) => { Chart.pin(v); CourseMap.setCursor(v); VideoPane.cursor(v, 'pin'); },
   onPlace: placeLine, photo: () => $('photo').checked, paint: paintForMap,
   onFollow: (on) => { $('follow').checked = on; saveFollow(); },
+  onTool: (t) => setOutlineTool(t),
 });
 // 車を追うか（ふだんは追わない。図を手で引くと外れる。選び直しは覚える）
 function saveFollow() { try { localStorage.setItem('follow', $('follow').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } }

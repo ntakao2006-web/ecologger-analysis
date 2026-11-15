@@ -70,7 +70,7 @@
       <label class="refpick" title="グラフ・動画のカーソルの位置（基準の周の車）をいつも図の真ん中に出します。倍率はそのまま（全体を見ているときだけ少し寄ります）。図を手で引くか、ダブルクリックで全体に戻すと外れます。車の印はつかんで線に沿って引けます"><input type="checkbox" id="follow"> 車を追う</label>
       <button id="editline" type="button" disabled>線を直す</button>
       <button id="delline" type="button" hidden>この版を消す</button>
-      <button id="editoutline" type="button" disabled title="自動で作ったコース図（縁・ゼブラ）を手で直し、距離の看板を置きます。直したものはコースごとに残り、自動のものより先に出ます">コース図を直す</button>
+      <button id="editoutline" type="button" disabled title="自動で作ったコース図（縁・ゼブラ）を手で直し、距離の看板を置きます。直したものはコースごとに保存され、自動のものより先に出ます">コース図を直す</button>
       <span class="grow"></span>
       <button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button>
     </div>
@@ -95,28 +95,29 @@
         幅 <input id="linewidth" type="number" min="5" max="300" step="1"> m
         <button id="addsector" type="button">セクターの線を足す</button>
         <button id="delsector" type="button">この線を消す</button></div>
-      <p class="note">図を押すと、選んだ線をそこへ置きます（向きは基準の周の走る向き）。周は残したときに切り直します。</p>
+      <p class="note">図を押すと、選んだ線をそこへ置きます（向きは基準の周の走る向き）。周は保存したときに切り直します。</p>
       <div class="row"><input id="linename" type="text" maxlength="40" placeholder="版の名前（例：公式の計測線）">
-        <button id="saveline" type="button">名前をつけて残す</button>
+        <button id="saveline" type="button">名前をつけて保存</button>
         <button id="cancelline" type="button">やめる</button></div>
     </div>
     <div id="outedit" class="lineedit" hidden>
       <div class="row tools" role="group" aria-label="道具">
-        <button type="button" data-tool="move">点を動かす</button>
-        <button type="button" data-tool="smooth">なめらかにする</button>
-        <button type="button" data-tool="straight">まっすぐにする</button>
-        <button type="button" data-tool="erase">消す</button>
-        <button type="button" data-tool="join">つなぐ</button>
-        <button type="button" data-tool="zebraAdd">ゼブラを足す</button>
-        <button type="button" data-tool="zebraDel">ゼブラを消す</button>
-        <button type="button" data-tool="board">看板</button></div>
+        <button type="button" data-tool="move" title="キーの 1、または図の上で右ボタンを押したまま上へ引く">点を動かす</button>
+        <button type="button" data-tool="smooth" title="キーの 2、または図の上で右ボタンを押したまま右上へ引く">なめらかにする</button>
+        <button type="button" data-tool="straight" title="キーの 3、または図の上で右ボタンを押したまま右へ引く">まっすぐにする</button>
+        <button type="button" data-tool="join" title="キーの 4、または図の上で右ボタンを押したまま右下へ引く">つなぐ</button>
+        <button type="button" data-tool="erase" title="キーの 5、または図の上で右ボタンを押したまま下へ引く">消す</button>
+        <button type="button" data-tool="zebraAdd" title="キーの 6、または図の上で右ボタンを押したまま左下へ引く">ゼブラを足す</button>
+        <button type="button" data-tool="zebraDel" title="キーの 7、または図の上で右ボタンを押したまま左へ引く">ゼブラを消す</button>
+        <button type="button" data-tool="board" title="キーの 8、または図の上で右ボタンを押したまま左上へ引く">看板</button></div>
       <div class="row">
         <label title="点を動かすとき、つかんだ点からこの距離の内の点も一緒に動きます（離れるほど少しだけ）。0 ならつかんだ1点だけ。なめらかにするときは、この半分の幅（1 m より細くはしない）でならします">なめらかさ <input id="oeradius" type="number" min="0" max="60" step="1" value="10"> m</label>
         <label title="足すゼブラの帯の幅">ゼブラの幅 <input id="oezebraw" type="number" min="0.2" max="5" step="0.1" value="1"> m</label>
         <label title="看板に書く字（12字まで）">看板の字 <input id="oeboard" type="text" maxlength="12" value="100" class="short"></label>
         <span class="grow"></span>
         <button id="oeundo" type="button" disabled title="Ctrl+Z でも戻せます">ひとつ戻す</button>
-        <button id="oesave" type="button" class="primary">残す</button>
+        <button id="oeredo" type="button" disabled title="戻した分をやり直します（Ctrl+Y・Ctrl+Shift+Z）">やり直す</button>
+        <button id="oesave" type="button" class="primary" title="直したコース図を保存します（Ctrl+S）">保存</button>
         <button id="oecancel" type="button">やめる</button>
         <button id="oereset" type="button" title="手で直したものを消して、自動で作ったコース図に戻します">自動に戻す</button></div>
       <p id="oehelp" class="note"></p>
@@ -139,7 +140,7 @@
     <button id="calcdel" type="button" hidden>この計算チャンネルを消す</button>
     <span class="grow"></span>
     <button id="calccancel" type="button">やめる</button>
-    <button id="calcsave" type="button" class="primary">残す</button>
+    <button id="calcsave" type="button" class="primary">保存</button>
   </div>
 </dialog>
 <script src="chart.js"></script>

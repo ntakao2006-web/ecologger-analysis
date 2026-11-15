@@ -18,6 +18,37 @@ const CourseMap = (() => {
   // 車を追う：オンのあいだは、描くたびに基準の周の車（カーソルの位置）を図の真ん中へ。倍率は変えない。
   // 図を手で引くと、リアルタイムの地図（tools/home_telemetry/map.html）と同じく追うのをやめる
   let follow = false;
+  // 道具を選ぶジェスチャー（右ボタンを押したまま引く）。{x, y 押した所（画素）, dx, dy 引いた量}
+  let gesture = null;
+  const GESTURE_MIN = 24, GESTURE_R = 64;
+  // 引いた向き：上を0に時計回りで8つ。引きが足りなければ -1
+  function gestureSector(gs) {
+    if (!gs || Math.hypot(gs.dx, gs.dy) < GESTURE_MIN) return -1;
+    return Math.round(((Math.atan2(gs.dx, -gs.dy) * 180 / Math.PI + 360) % 360) / 45) % 8;
+  }
+  function drawGesture(g) {
+    const items = editor && editor.active() && editor.GESTURE;
+    if (!gesture || !items) return;
+    const { x, y } = gesture, sel = gestureSector(gesture), cur = editor.tool(), acc = css('--accent') || '#3b82f6';
+    g.save();
+    g.beginPath(); g.arc(x, y, GESTURE_R + 40, 0, 2 * Math.PI); g.fillStyle = 'rgba(17, 24, 39, 0.55)'; g.fill();
+    if (sel >= 0) {                  // 押した所から引いた先へ
+      g.strokeStyle = acc; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + gesture.dx, y + gesture.dy); g.stroke();
+    }
+    g.beginPath(); g.arc(x, y, 4, 0, 2 * Math.PI); g.fillStyle = '#ffffff'; g.fill();
+    g.font = '12px "Yu Gothic UI", "Segoe UI", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    items.forEach(([key, label], i) => {
+      const a = i * Math.PI / 4, px = x + Math.sin(a) * GESTURE_R, py = y - Math.cos(a) * GESTURE_R;
+      const text = `${i + 1} ${label}`, tw = g.measureText(text).width + 14, th = 22;
+      g.beginPath();
+      if (g.roundRect) g.roundRect(px - tw / 2, py - th / 2, tw, th, 11); else g.rect(px - tw / 2, py - th / 2, tw, th);
+      g.fillStyle = i === sel ? acc : '#1f2937'; g.fill();
+      g.lineWidth = key === cur ? 2 : 1; g.strokeStyle = key === cur ? acc : 'rgba(255, 255, 255, 0.35)'; g.stroke();
+      g.fillStyle = '#ffffff'; g.fillText(text, px, py + 1);
+    });
+    g.restore();
+  }
   const FOLLOW_SPAN = 250;                   // 追い始めるとき、全体を見ている倍率ならここまで寄る（m）
 
   function css(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
@@ -611,6 +642,7 @@ const CourseMap = (() => {
       g.textAlign = 'center'; g.textBaseline = 'top'; g.font = '12px "Yu Gothic UI", sans-serif';
       g.fillStyle = photo ? '#fde68a' : css('--muted'); g.fillText(note, w / 2, 8);
     }
+    drawGesture(g);                  // いちばん上に
   }
 
   function nearestTrack(x, y) {
@@ -677,6 +709,28 @@ const CourseMap = (() => {
       if (first) requestAnimationFrame(() => { const x = pickReq; pickReq = null; if (x !== null) opts.onPick(x); });
     };
     const geo = (r) => ({ k: scale(r.width, r.height), nearestTrack });
+    // 道具の切り替え（コース図を直しているとき）：右ボタンを押したまま引いた向きの道具にする。引かずに放すと押しかけを取り消す
+    cv.addEventListener('contextmenu', (e) => { if (editing()) e.preventDefault(); });
+    cv.addEventListener('mousedown', (e) => {
+      if (e.button !== 2 || !editing() || !editor.GESTURE) return;
+      e.preventDefault();
+      const r = cv.getBoundingClientRect();
+      gesture = { x: e.clientX - r.left, y: e.clientY - r.top, dx: 0, dy: 0 };
+      draw();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!gesture) return;
+      const r = cv.getBoundingClientRect();
+      gesture.dx = e.clientX - r.left - gesture.x; gesture.dy = e.clientY - r.top - gesture.y;
+      later();
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!gesture || e.button !== 2) return;
+      const gs = gesture, i = gestureSector(gs);
+      gesture = null;
+      if (i >= 0 && editor && editor.active()) { if (opts.onTool) opts.onTool(editor.GESTURE[i][0]); } else if (editor) editor.cancelPending();
+      draw();
+    });
     cv.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy }; moved = false;
