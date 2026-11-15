@@ -4,6 +4,7 @@
 // 航空写真（国土地理院のタイル）を下に敷ける。タイルは裏の /tiles/gsi/ から読み（裏が手元に残す）、
 // 四隅を同じ座標へ直して置く（コースの広さなら、平面に直した誤差は1 mより小さい）。
 // コース図（道路の両側の縁。裏の outline.py が国土地理院のデータから作る）を、周の線の下に薄く描ける。
+// コース図を手で直すとき（outedit.js）は、その中身を描き、マウスをエディタへ渡す。
 'use strict';
 
 const CourseMap = (() => {
@@ -12,6 +13,8 @@ const CourseMap = (() => {
   const tiles = new Map();      // 'z/x/y' → {img, state: 'loading'|'ok'|'ng'}
   let photoNote = null, pending = false, hover = null, paintNow = null;
   let outline = null, outlineNote = null;   // コース図 {lines: [[[lat, lon], …]]} と、作っている・作れないときの知らせ
+  let outlineXY = null, outlineKey = null;  // コース図を m に直したもの（描くたびに直さない）
+  let editor = null;                         // コース図のエディタ（OutlineEditor。直していないときは null）
 
   function css(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
 
@@ -158,37 +161,74 @@ const CourseMap = (() => {
   // コース図：道路の縁だけを薄く（周の線がコース幅のどこを通ったかを読むための下地）
   const ROAD_MIN_PX = 9;           // コース図の道の帯は、引いて見てもこの太さ（画素）より細くしない
   const ZEBRA_MIN_PX = 4;          // ゼブラの帯も、この太さより細くしない
+  // 描く中身（m）：{lines: [{pts: [[x, y]], closed}], kerbs: [{w, pts}], boards: [{x, y, text}]}
+  function outlineView() {
+    if (editor && editor.active()) return editor.view();
+    if (!outline || !outline.lines) return null;
+    const key = data.origin.join(',');
+    if (outlineXY && outlineKey === key && outlineXY.src === outline) return outlineXY;
+    const xy = (pts) => pts.map((q) => toXY(q[0], q[1]));
+    outlineXY = { src: outline,
+                  lines: outline.lines.map((ln) => ({ pts: xy(ln), closed: false })),
+                  kerbs: (outline.kerbs || []).filter((z) => z && z.pts).map((z) => ({ w: z.w || 1, pts: xy(z.pts) })),
+                  boards: (outline.boards || []).map((bd) => { const [x, y] = toXY(bd.lat, bd.lon); return { x, y, text: bd.text }; }) };
+    outlineKey = key;
+    return outlineXY;
+  }
+
   function drawOutline(g, w, h, photo) {
-    if (!outline || !outline.lines) return;
+    const o = outlineView();
+    if (!o) return;
     const dark = isDark();
-    const path = (pts) => { g.beginPath(); pts.forEach((q, i) => { const [px, py] = P(...toXY(q[0], q[1]), w, h); if (i) g.lineTo(px, py); else g.moveTo(px, py); }); };
+    const path = (it) => {
+      g.beginPath();
+      it.pts.forEach((q, i) => { const [px, py] = P(q[0], q[1], w, h); if (i) g.lineTo(px, py); else g.moveTo(px, py); });
+      if (it.closed) g.closePath();
+    };
     g.save();
     g.lineJoin = 'round'; g.lineCap = 'round';
     if (photo) {                       // 写真の上：暗い縁取りの上に白
       g.strokeStyle = 'rgba(0, 0, 0, 0.45)'; g.lineWidth = 3.5;
-      for (const ln of outline.lines) { path(ln); g.stroke(); }
+      for (const ln of o.lines) { path(ln); g.stroke(); }
     }
     // 引いて見るとコースの幅が数画素になり、縁が周の線の下に隠れる。そのときは縁を太らせて道の帯にする
-    const roadPx = ((outline.width_m && outline.width_m[1]) || 12) * scale(w, h);
+    const roadPx = ((outline && outline.width_m && outline.width_m[1]) || 12) * scale(w, h);
     const fat = !photo && roadPx < ROAD_MIN_PX;
     g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.9)' : fat ? (dark ? '#4b5563' : '#d4d9e0') : (dark ? '#6b7280' : '#a3abb6');
     g.lineWidth = photo ? 1.5 : fat ? ROAD_MIN_PX - roadPx + 2 : 2;
-    for (const ln of outline.lines) { path(ln); g.stroke(); }
+    for (const ln of o.lines) { path(ln); g.stroke(); }
     // ゼブラ：縁に沿った決まった幅の帯を、走る向きに1 mおきの赤白で（写真では縞を読み切れないので、ある区間だけを描く）
-    if (outline.kerbs && outline.kerbs.length) {
+    if (o.kerbs && o.kerbs.length) {
       const k = scale(w, h);
       const dash = Math.max(3, 1.0 * k);
       const white = photo ? 'rgba(255, 255, 255, 0.9)' : dark ? 'rgba(229, 231, 235, 0.5)' : 'rgba(255, 255, 255, 0.95)';
       const red = photo ? 'rgba(239, 68, 68, 0.95)' : dark ? 'rgba(248, 113, 113, 0.85)' : 'rgba(220, 38, 38, 0.7)';
       g.lineCap = 'butt';
-      for (const z of outline.kerbs) {
-        if (!z || !z.pts) continue;
+      for (const z of o.kerbs) {
+        if (!z || !z.pts || z.pts.length < 2) continue;
         const bw = Math.max(ZEBRA_MIN_PX, (z.w || 1) * k);
-        if (!dark && !photo) { path(z.pts); g.setLineDash([]); g.strokeStyle = 'rgba(156, 163, 175, 0.6)'; g.lineWidth = bw + 1.5; g.stroke(); }
-        path(z.pts); g.setLineDash([]); g.strokeStyle = white; g.lineWidth = bw; g.stroke();
-        path(z.pts); g.setLineDash([dash, dash]); g.strokeStyle = red; g.stroke();
+        if (!dark && !photo) { path(z); g.setLineDash([]); g.strokeStyle = 'rgba(156, 163, 175, 0.6)'; g.lineWidth = bw + 1.5; g.stroke(); }
+        path(z); g.setLineDash([]); g.strokeStyle = white; g.lineWidth = bw; g.stroke();
+        path(z); g.setLineDash([dash, dash]); g.strokeStyle = red; g.stroke();
       }
       g.setLineDash([]);
+    }
+    g.restore();
+  }
+
+  // 距離の看板（コーナーの手前の「100」など）：白い板に黒い字。大きさは倍率によらず同じ
+  function drawBoards(g, w, h) {
+    const o = outlineView();
+    if (!o || !o.boards || !o.boards.length) return;
+    g.save();
+    g.font = 'bold 10px "Yu Gothic UI", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (const bd of o.boards) {
+      const [px, py] = P(bd.x, bd.y, w, h);
+      if (px < -40 || py < -20 || px > w + 40 || py > h + 20) continue;
+      const tw = Math.max(14, g.measureText(bd.text).width + 6);
+      g.fillStyle = '#ffffff'; g.strokeStyle = '#1f2937'; g.lineWidth = 1.2;
+      g.beginPath(); g.rect(px - tw / 2, py - 7, tw, 14); g.fill(); g.stroke();
+      g.fillStyle = '#111827'; g.fillText(bd.text, px, py + 0.5);
     }
     g.restore();
   }
@@ -499,8 +539,10 @@ const CourseMap = (() => {
         g.beginPath(); g.arc(px, py, lap.ref ? 6 : 5, 0, 2 * Math.PI); g.fill(); g.stroke();
       }
     }
+    drawBoards(g, w, h);
+    if (editor && editor.active()) editor.overlay(g, (x, y) => P(x, y, w, h), scale(w, h), dark);
     drawLegend(g, w, h, photo);
-    if (hover) drawHover(g, w, h);
+    if (hover && !(editor && editor.active())) drawHover(g, w, h);
     // 縮尺
     const k = scale(w, h), m = [10, 20, 50, 100, 200, 500, 1000].find((v) => v * k >= 60) || 1000;
     g.strokeStyle = photo ? '#ffffff' : css('--muted'); g.fillStyle = g.strokeStyle; g.lineWidth = 2;
@@ -508,7 +550,7 @@ const CourseMap = (() => {
     g.font = '11px "Yu Gothic UI", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'bottom';
     g.fillText(m >= 1000 ? `${m / 1000}km` : `${m}m`, PAD, h - PAD - 4);
     // 写真・コース図の出典（地理院のデータの決まり）と、読めない・作っているときの知らせ
-    const hasOutline = !!(outline && outline.lines && outline.lines.length);
+    const hasOutline = !!((outline && outline.lines && outline.lines.length) || (editor && editor.active()));
     if (photo || hasOutline) {
       g.font = '10px "Yu Gothic UI", sans-serif'; g.textAlign = 'right'; g.textBaseline = 'bottom';
       const src = photo ? (hasOutline ? '出典：国土地理院（コース図は加工して作成）' : '出典：国土地理院') : 'コース図：国土地理院のデータを加工して作成';
@@ -521,6 +563,11 @@ const CourseMap = (() => {
       g.textAlign = 'center'; g.textBaseline = 'top'; g.font = '12px "Yu Gothic UI", sans-serif';
       g.fillStyle = photo ? '#fde68a' : css('--muted'); g.fillText(note, w / 2, 8);
     }
+  }
+
+  function nearestTrack(x, y) {
+    const n = nearest(x, y), lap = refLap();
+    return n && lap ? [lap.track.x[n.i], lap.track.y[n.i]] : null;
   }
 
   // 基準の周で、押した所にいちばん近い点（と、そこでの進む向き）
@@ -541,14 +588,26 @@ const CourseMap = (() => {
   }
 
   function bind() {
-    cv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy }; moved = false; });
+    const editing = () => editor && editor.active() && data && data.origin;
+    const geo = (r) => ({ k: scale(r.width, r.height), nearestTrack });
+    cv.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy }; moved = false;
+      if (editing()) {
+        const r = cv.getBoundingClientRect();
+        const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        if (editor.down(x, y, geo(r))) { drag.edit = true; cv.style.cursor = 'grabbing'; }
+      }
+    });
     window.addEventListener('mouseup', (e) => {
       if (!drag) return;
       const was = drag; drag = null;
+      if (was.edit) { editor.up(); cv.style.cursor = ''; draw(); return; }
       if (moved || !data || !data.origin) return;
       const r = cv.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
       const [x, y] = U(was.x - r.left, was.y - r.top, r.width, r.height);
+      if (editing()) { editor.click(x, y, geo(r)); editor.hoverAt(x, y, geo(r)); draw(); return; }
       const near = nearest(x, y);
       if (opts.editing()) {
         const [lat, lon] = toLatLon(x, y);
@@ -559,6 +618,20 @@ const CourseMap = (() => {
     });
     cv.addEventListener('mouseleave', () => { if (hover) { hover = null; draw(); } });
     cv.addEventListener('mousemove', (e) => {
+      if (drag && drag.edit) {
+        const r = cv.getBoundingClientRect();
+        const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        editor.move(x, y);
+        later();
+        return;
+      }
+      if (!drag && editing()) {
+        const r = cv.getBoundingClientRect();
+        const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        cv.style.cursor = editor.hoverAt(x, y, geo(r)) || '';
+        later();
+        return;
+      }
       if (!drag) {
         if (!data || !data.origin) return;
         const r = cv.getBoundingClientRect(), was = hover;
@@ -582,7 +655,7 @@ const CourseMap = (() => {
       view.cx = x + (view.cx - x) * f; view.cy = y + (view.cy - y) * f;
       draw();
     }, { passive: false });
-    cv.addEventListener('dblclick', () => { fit(); draw(); });
+    cv.addEventListener('dblclick', () => { if (editing()) return; fit(); draw(); });   // 直しているときは押し直しで図が戻らないように
   }
 
   return {
@@ -594,7 +667,14 @@ const CourseMap = (() => {
     paintRange() { return paintNow && paintNow.rng; },
     setCursor(x) { cursor = x; draw(); },
     // コース図（null で消す）と、図の上に出す知らせ（作っている・作れない）
-    setOutline(o, note) { outline = o || null; outlineNote = note || null; draw(); },
+    setOutline(o, note) { outline = o || null; outlineNote = note || null; outlineXY = null; draw(); },
+    // コース図のエディタ（OutlineEditor か null）。直す中身の座標を出し入れするための変換も渡す
+    setEditor(ed) { editor = ed || null; if (cv) cv.style.cursor = ''; draw(); },
+    toXY: (lat, lon) => toXY(lat, lon),
+    toLatLon: (x, y) => toLatLon(x, y),
+    ready: () => !!(data && data.origin),
+    // 画面の上の位置（clientX, clientY）。試しに押す所を決めるため
+    toScreen(lat, lon) { const r = cv.getBoundingClientRect(); const [px, py] = P(...toXY(lat, lon), r.width, r.height); return [r.left + px, r.top + py]; },
     redraw() { draw(); },
     clear() { data = null; cursor = null; hover = null; if (cv) { const [g, w, h] = size(); g.clearRect(0, 0, w, h); } },
   };

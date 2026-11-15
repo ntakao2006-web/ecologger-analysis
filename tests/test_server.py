@@ -153,6 +153,18 @@ class ServerTest(unittest.TestCase):
             self.assertIn('国土地理院', o['attribution'])
             self.assertEqual(self.api('outline', {'id': 's999'})[0], 400)
             self.assertEqual(self.api('outline', {})[0], 400)
+            # 手で直したもの（SP-10-24）：残すとそちらが出る。形が違えば 400。自動に戻せる
+            ln = [[38.14, 140.78], [38.1401, 140.7801]]
+            code, j = self.api('outline/save', {'id': sid, 'outline': {'lines': [ln], 'kerbs': [], 'boards': [
+                {'lat': 38.14, 'lon': 140.78, 'text': '100'}]}})
+            self.assertEqual(code, 200, j)
+            self.assertTrue(j['outline']['edited'])
+            self.assertEqual(self.api('outline', {'id': sid})[1]['outline']['lines'], [ln])
+            self.assertFalse(self.api('outline', {'id': sid, 'auto': True})[1]['outline'].get('edited'))
+            self.assertEqual(self.api('outline/save', {'id': sid, 'outline': {'lines': [[[1, 2]]]}})[0], 400)
+            code, j = self.api('outline/reset', {'id': sid})
+            self.assertEqual(code, 200, j)
+            self.assertFalse(j['outline'].get('edited'))
             self.api('close', {'id': sid})
         finally:
             store.outlines = real

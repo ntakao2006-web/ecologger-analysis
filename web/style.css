@@ -127,6 +127,9 @@ body.resizing video, body.resizing canvas, body.moving video, body.moving canvas
 .lineedit input, .lineedit select { font: inherit; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); }
 .lineedit input[type=text] { flex: 1; min-width: 140px; }
 .lineedit button, .map .gbar button { font-size: 12px; padding: 2px 8px; }
+.lineedit .tools button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.lineedit input.short { flex: none; width: 64px; min-width: 0; }
+.lineedit label { display: inline-flex; align-items: center; gap: 4px; }
 /* 動画 */
 .video { display: flex; flex-direction: column; overflow: hidden; }
 .video .gbar button { font-size: 12px; padding: 2px 10px; }
@@ -174,3 +177,4 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 /* ブラウザで開いているときの知らせ */
 .modenote { margin: 0; padding: 6px 14px; font-size: 12px; color: var(--warn); background: var(--panel); border-bottom: 1px solid var(--line); }
 .modenote[hidden] { display: none; }
+button.primary:disabled { opacity: 0.45; }

@@ -273,6 +273,42 @@ class OutlineTest(unittest.TestCase):
         rz = np.hypot((z[:, 1] - LON0) * KX, (z[:, 0] - LAT0) * outline.M_PER_DEG)
         self.assertLess(np.median(np.abs(rz - (R_OUT + outline.ZEBRA_W_M / 2))), 0.3)    # 帯は縁の外側に接する
 
+    def test_hand_edit_is_kept_per_course_and_wins(self):
+        o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
+        la, lo = circle(R_CAR, 0, 2 * math.pi, 800)
+        auto = o.get('円コース', la, lo, laps=3)
+        self.assertNotIn('edited', auto)
+        ln = [[LAT0, LON0], [round(LAT0 + 0.0001, 7), round(LON0 + 0.0001, 7)]]
+        o.save_edit('円コース', la, lo, {'lines': [ln], 'kerbs': [{'w': 1.0, 'pts': ln}],
+                                          'boards': [{'lat': LAT0, 'lon': LON0, 'text': ' 100 '}]}, width_m=12.0)
+        o2 = outline.Outlines(self.tmp.name, Photos(offline=True), fetch=self.fetch)     # 開き直し、写真が取れなくても出る
+        e = o2.get('円コース', la, lo, laps=3)
+        self.assertTrue(e['edited'])
+        self.assertEqual(e['lines'], [ln])
+        self.assertEqual(e['boards'], [{'lat': LAT0, 'lon': LON0, 'text': '100'}])
+        self.assertEqual(e['width_m'], 12.0)
+        self.assertNotIn('edited', o2.get('円コース', la, lo, laps=3, auto=True))           # 自動のものも取れる
+        self.assertIsNone(o2.edited('別のコース', la, lo))
+        self.assertTrue(o2.clear_edit('円コース', la, lo))                                  # 自動に戻す
+        self.assertNotIn('edited', o2.get('円コース', la, lo, laps=3))
+
+    def test_hand_edit_shape_is_checked(self):
+        ok = [[LAT0, LON0], [LAT0, LON0 + 0.0001]]
+        bad = [
+            {'lines': 'x'},
+            {'lines': [[[LAT0, LON0]]]},                                      # 点が1つ
+            {'lines': [[[LAT0, float('nan')], [LAT0, LON0]]]},
+            {'lines': [[[95, LON0], [LAT0, LON0]]]},
+            {'lines': [ok], 'kerbs': [{'w': 9, 'pts': ok}]},
+            {'lines': [ok], 'boards': [{'lat': LAT0, 'lon': LON0, 'text': 'x' * 13}]},
+            {'lines': [ok], 'boards': [{'lat': LAT0, 'lon': LON0, 'text': '  '}]},
+            {'lines': [ok] * (outline.EDIT_MAX_LINES + 1)},
+        ]
+        for d in bad:
+            with self.assertRaises(outline.OutlineError, msg=str(d)[:60]):
+                outline.check_edit(d)
+        self.assertEqual(outline.check_edit({'lines': [ok]})['kerbs'], [])
+
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
         with self.assertRaises(outline.OutlineError):

@@ -182,9 +182,10 @@ class Store:
         return out
 
     # 計算チャンネル
-    def outline(self, sid, rebuild=False):
-        """その走行のコースのコース図（道路の縁）。同じコースで開いている走行を全部まとめて使う：
-        案内はアプリで切った周のいちばん速い周、走った幅は全部の走行の測位（周が多いほど、コースの中の線を見分けやすい）"""
+    def _outline_inputs(self, sid):
+        """コース図を作るもの：(コース名, 案内の周の lat, lon, 全部の走行の t, lat, lon, 周の数)。
+        同じコースで開いている走行を全部まとめて使う：案内はアプリで切った周のいちばん速い周、走った幅は全部の走行の測位
+        （周が多いほど、コースの中の線を見分けやすい）"""
         with self.lock:
             it = self.items.get(sid)
             if it is None:
@@ -209,8 +210,25 @@ class Store:
             n_laps += len(pool)
         if best is None:
             raise outline.OutlineError('周が無いので、コース図を作れません')
-        return self.outlines.get(course, best[1], best[2], rebuild,
-                                 np.concatenate(t_all), np.concatenate(la_all), np.concatenate(lo_all), laps=n_laps)
+        return course, best[1], best[2], np.concatenate(t_all), np.concatenate(la_all), np.concatenate(lo_all), n_laps
+
+    def outline(self, sid, rebuild=False, auto=False):
+        """その走行のコースのコース図（道路の縁）。手で直したものがあればそちら。auto=True なら自動のものだけ"""
+        course, la, lo, t_all, la_all, lo_all, n = self._outline_inputs(sid)
+        return self.outlines.get(course, la, lo, rebuild, t_all, la_all, lo_all, laps=n, auto=auto)
+
+    def outline_save(self, sid, data):
+        """手で直したコース図を残す。幅（引いた図で道の帯にする太さ）は自動のものから写す"""
+        course, la, lo, *_ = self._outline_inputs(sid)
+        auto = self.outlines.cached(self.outlines.key(course, la, lo))
+        self.outlines.save_edit(course, la, lo, data, (auto or {}).get('width_m'))
+        return self.outline(sid)
+
+    def outline_reset(self, sid):
+        """手で直したものを消して、自動のものへ戻す"""
+        course, la, lo, *_ = self._outline_inputs(sid)
+        self.outlines.clear_edit(course, la, lo)
+        return self.outline(sid)
 
     def channel_names(self):
         """開いている走行の、元のチャンネルの名前"""
@@ -527,16 +545,24 @@ class Handler(BaseHTTPRequestHandler):
                                                                     paint, mark)})
             except KeyError as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
-        if path == '/api/outline':
+        if path in ('/api/outline', '/api/outline/save', '/api/outline/reset'):
             sid, rebuild = body.get('id'), bool(body.get('rebuild'))
             if not isinstance(sid, str):
                 return self._json({'ok': False, 'error': 'id が無い'}, 400)
             try:
-                return self._json({'ok': True, 'outline': self.store.outline(sid, rebuild)})
+                if path == '/api/outline/save':
+                    o = self.store.outline_save(sid, body.get('outline'))
+                elif path == '/api/outline/reset':
+                    o = self.store.outline_reset(sid)
+                else:
+                    o = self.store.outline(sid, rebuild, bool(body.get('auto')))
+                return self._json({'ok': True, 'outline': o})
             except KeyError as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
             except outline.OutlineError as e:
                 return self._json({'ok': False, 'error': str(e)}, 400)
+            except OSError as e:
+                return self._json({'ok': False, 'error': f'残せませんでした（{e.strerror or e}）'}, 500)
         if path.startswith('/api/lines/'):
             try:
                 sessions = self.store.set_lines(path.rsplit('/', 1)[1], body.get('course'), body.get('name'),

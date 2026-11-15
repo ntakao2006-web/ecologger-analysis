@@ -66,6 +66,7 @@
       <label class="refpick" title="道路の両側の縁だけを薄く描き、周の線がコース幅のどこを通ったかを読めるようにします。国土地理院の地図（道路縁）と航空写真から自動で作り、コースごとに手元に残します（初めてのコースだけネットが要ります）。ピットロードは描きません"><input type="checkbox" id="outline"> コース図</label>
       <button id="editline" type="button" disabled>線を直す</button>
       <button id="delline" type="button" hidden>この版を消す</button>
+      <button id="editoutline" type="button" disabled title="自動で作ったコース図（縁・ゼブラ）を手で直し、距離の看板を置きます。直したものはコースごとに残り、自動のものより先に出ます">コース図を直す</button>
       <span class="grow"></span>
       <button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button>
     </div>
@@ -95,6 +96,26 @@
         <button id="saveline" type="button">名前をつけて残す</button>
         <button id="cancelline" type="button">やめる</button></div>
     </div>
+    <div id="outedit" class="lineedit" hidden>
+      <div class="row tools" role="group" aria-label="道具">
+        <button type="button" data-tool="move">点を動かす</button>
+        <button type="button" data-tool="straight">まっすぐにする</button>
+        <button type="button" data-tool="erase">消す</button>
+        <button type="button" data-tool="join">つなぐ</button>
+        <button type="button" data-tool="zebraAdd">ゼブラを足す</button>
+        <button type="button" data-tool="zebraDel">ゼブラを消す</button>
+        <button type="button" data-tool="board">看板</button></div>
+      <div class="row">
+        <label title="点を動かすとき、つかんだ点からこの距離の内の点も一緒に動きます（離れるほど少しだけ）。0 ならつかんだ1点だけ">なめらかさ <input id="oeradius" type="number" min="0" max="60" step="1" value="10"> m</label>
+        <label title="足すゼブラの帯の幅">ゼブラの幅 <input id="oezebraw" type="number" min="0.2" max="5" step="0.1" value="1"> m</label>
+        <label title="看板に書く字（12字まで）">看板の字 <input id="oeboard" type="text" maxlength="12" value="100" class="short"></label>
+        <span class="grow"></span>
+        <button id="oeundo" type="button" disabled title="Ctrl+Z でも戻せます">ひとつ戻す</button>
+        <button id="oesave" type="button" class="primary">残す</button>
+        <button id="oecancel" type="button">やめる</button>
+        <button id="oereset" type="button" title="手で直したものを消して、自動で作ったコース図に戻します">自動に戻す</button></div>
+      <p id="oehelp" class="note"></p>
+    </div>
     <p id="mapEmpty" class="empty">周を選ぶと、走った線を描きます。図を押すと、グラフのカーソルがその場所へ動きます。</p>
     <canvas id="mapcv" class="mapcv"></canvas>
   </section>
@@ -118,6 +139,7 @@
 </dialog>
 <script src="chart.js"></script>
 <script src="map.js"></script>
+<script src="outedit.js"></script>
 <script src="video.js"></script>
 <script src="layout.js"></script>
 <script src="app.js"></script>

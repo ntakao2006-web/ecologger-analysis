@@ -24,6 +24,7 @@ import json
 import math
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -178,6 +179,60 @@ def guide(lat, lon, closed=True):
     return (lat0, lon0), gx, gy, -ty, tx
 
 
+EDIT_MAX_LINES = 400
+EDIT_MAX_POINTS = 200000                # 線・ゼブラの点の数の合計
+EDIT_MAX_KERBS = 1000
+EDIT_MAX_BOARDS = 300
+BOARD_TEXT_MAX = 12
+
+
+def _check_pts(pts, what):
+    if not isinstance(pts, list) or len(pts) < 2:
+        raise OutlineError(f'{what}の点が足りない')
+    out = []
+    for q in pts:
+        if not (isinstance(q, (list, tuple)) and len(q) == 2):
+            raise OutlineError(f'{what}の点の形が違う')
+        la, lo = q
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (la, lo)) \
+                or abs(la) > 90 or abs(lo) > 180:
+            raise OutlineError(f'{what}の点の数が違う')
+        out.append([round(float(la), 7), round(float(lo), 7)])
+    return out
+
+
+def check_edit(data):
+    """手で直したコース図 {lines: [[[lat, lon], …]], kerbs: [{w, pts}], boards: [{lat, lon, text}]} の形を確かめて、決まった形にして返す"""
+    if not isinstance(data, dict):
+        raise OutlineError('形が違う')
+    lines_, kerbs_, boards_ = data.get('lines'), data.get('kerbs', []), data.get('boards', [])
+    if not isinstance(lines_, list) or not isinstance(kerbs_, list) or not isinstance(boards_, list):
+        raise OutlineError('形が違う')
+    if len(lines_) > EDIT_MAX_LINES or len(kerbs_) > EDIT_MAX_KERBS or len(boards_) > EDIT_MAX_BOARDS:
+        raise OutlineError('数が多すぎる')
+    lines_ = [_check_pts(ln, '縁') for ln in lines_]
+    out_k = []
+    for k in kerbs_:
+        if not isinstance(k, dict):
+            raise OutlineError('ゼブラの形が違う')
+        w = k.get('w', ZEBRA_W_M)
+        if not isinstance(w, (int, float)) or isinstance(w, bool) or not (0.2 <= w <= 5):
+            raise OutlineError('ゼブラの幅が違う')
+        out_k.append({'w': float(w), 'pts': _check_pts(k.get('pts'), 'ゼブラ')})
+    if sum(len(x) for x in lines_) + sum(len(k['pts']) for k in out_k) > EDIT_MAX_POINTS:
+        raise OutlineError('点が多すぎる')
+    out_b = []
+    for b in boards_:
+        if not isinstance(b, dict):
+            raise OutlineError('看板の形が違う')
+        la, lo = _check_pts([[b.get('lat'), b.get('lon')], [0, 0]], '看板')[0]      # 2点目は形を合わせるだけ
+        text = b.get('text')
+        if not isinstance(text, str) or not text.strip() or len(text) > BOARD_TEXT_MAX:
+            raise OutlineError(f'看板の字は{BOARD_TEXT_MAX}字まで')
+        out_b.append({'lat': la, 'lon': lo, 'text': text.strip()})
+    return {'lines': lines_, 'kerbs': out_k, 'boards': out_b}
+
+
 class Outlines:
     def __init__(self, home, photos, fetch=_fetch):
         """photos：tiles.Tiles（航空写真。get(z, x, y) → (状態, JPEG)）"""
@@ -222,7 +277,57 @@ class Outlines:
         except OSError:
             pass
 
-    def get(self, course, lat, lon, rebuild=False, t_all=None, lat_all=None, lon_all=None, laps=0):
+    # ---- 手で直したコース図（コースごと。作り方の版が変わっても残す）
+    @staticmethod
+    def edit_key(course, lat, lon):
+        base = course or f'{float(np.nanmean(lat)):.3f},{float(np.nanmean(lon)):.3f}'
+        return 'edit-' + hashlib.sha1(f'edit:{base}'.encode('utf-8')).hexdigest()[:16]
+
+    def edited(self, course, lat, lon):
+        try:
+            out = json.loads((self.dir / f'{self.edit_key(course, lat, lon)}.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        try:
+            e = check_edit(out)
+        except OutlineError:
+            return None
+        w = out.get('width_m')
+        e['width_m'] = float(w) if isinstance(w, (int, float)) and not isinstance(w, bool) and 1 <= w <= 60 else None
+        e['saved_at'] = out.get('saved_at') if isinstance(out.get('saved_at'), str) else None
+        return e
+
+    def save_edit(self, course, lat, lon, data, width_m=None):
+        """手で直した {lines, kerbs, boards} を残す（形を確かめてから）。返り値は残した中身"""
+        out = check_edit(data)
+        out['width_m'] = width_m
+        out['course'] = course
+        out['saved_at'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+        self.dir.mkdir(parents=True, exist_ok=True)
+        f = self.dir / f'{self.edit_key(course, lat, lon)}.json'
+        tmp = f.with_name(f'{f.name}.{os.getpid()}.{threading.get_ident()}.tmp')
+        tmp.write_text(json.dumps(out, ensure_ascii=False), encoding='utf-8')
+        os.replace(tmp, f)
+        return out
+
+    def clear_edit(self, course, lat, lon):
+        try:
+            (self.dir / f'{self.edit_key(course, lat, lon)}.json').unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def get(self, course, lat, lon, rebuild=False, t_all=None, lat_all=None, lon_all=None, laps=0, auto=False):
+        """コース図。手で直したものがあればそちら（edited: True。自動で作り直さなくても出せる）。auto=True なら自動のものだけ"""
+        if not auto:
+            e = self.edited(course, lat, lon)
+            if e is not None:
+                return {'version': VERSION, 'course': course, 'lines': e['lines'], 'kerbs': e['kerbs'], 'boards': e['boards'],
+                        'attribution': ATTRIBUTION, 'complete': True, 'edited': True, 'saved_at': e.get('saved_at'),
+                        'width_m': e.get('width_m'), 'share': None, 'laps': laps}
+        return self.get_auto(course, lat, lon, rebuild, t_all, lat_all, lon_all, laps)
+
+    def get_auto(self, course, lat, lon, rebuild=False, t_all=None, lat_all=None, lon_all=None, laps=0):
         """コース図 {version, course, laps, lines: [[[lat, lon], …]], share: {gsi, photo, none}, attribution, complete, width_m}。
         laps：走った幅を見た周の数。残した図より多い周の走行で頼まれたら作り直す（周が多いほど、コースの中を通る
         地図の線を見分けやすい）"""

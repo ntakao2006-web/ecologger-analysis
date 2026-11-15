@@ -2,7 +2,7 @@
 'use strict';
 
 const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 'dist', channels: null, ref: '', colors: new Map(), req: 0,
-                overlay: null, refSession: null, draft: null, formulas: [], help: null, editing: null, rev: null, notice: 0 };
+                overlay: null, refSession: null, draft: null, outedit: null, formulas: [], help: null, editing: null, rev: null, notice: 0 };
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
 const DEFAULT_CHANNELS = ['Speed', 'Throttle', 'RPM', 'LongAccel', 'LatAccel'];
 try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
@@ -330,17 +330,29 @@ async function renderPicked() {
 // コース図（道路の縁）：基準の周の走行のコースで頼む。コースごとに裏が残すので、2回目からはすぐ出る
 async function loadOutline() {
   const s = state.refSession;
-  if (!$('outline').checked || !s) { CourseMap.setOutline(null); return; }
-  if (state.outlineFor === s.id && state.outlineData) { CourseMap.setOutline(state.outlineData); return; }
+  if (state.outedit && (!s || s.id !== state.outedit.sid || !$('outline').checked)) {
+    stopOutlineEdit();
+    status('基準の走行が変わったので、コース図を直すのをやめました（残していない分は消えました）', 'ng');
+  }
+  if (!$('outline').checked || !s) { CourseMap.setOutline(null); renderOutlineControls(); return; }
+  if (state.outedit && state.overlay && state.overlay.origin && state.outedit.origin.join() !== state.overlay.origin.join()) {
+    // 選んだ周が変わって図の原点が動いた：直している中身を新しい原点へ移す
+    const [la0, lo0] = state.outedit.origin, M = 111320.0, c = M * Math.cos(la0 * Math.PI / 180);
+    OutlineEditor.remap((x, y) => CourseMap.toXY(la0 + y / M, lo0 + x / c));
+    state.outedit.origin = state.overlay.origin.slice();
+  }
+  if (state.outlineFor === s.id && state.outlineData) { CourseMap.setOutline(state.outlineData); renderOutlineControls(); return; }
   if (state.outlineFor === s.id) return;            // 作っている
   const id = s.id;
   state.outlineFor = id; state.outlineData = null;
   CourseMap.setOutline(null, 'コース図を作っています…（初めてのコースは数秒〜十数秒）');
+  renderOutlineControls();
   let j;
   try { j = await api('outline', { id }); } catch (e) { j = { ok: false, error: '裏の処理とつながっていません' }; }
   if (state.outlineFor !== id) return;              // そのあいだに基準の走行が変わった
   if (!j.ok) { state.outlineFor = null; CourseMap.setOutline(null, `コース図を作れません（${j.error}）`); return; }
   state.outlineData = j.outline;
+  renderOutlineControls();
   if (!$('outline').checked) { CourseMap.setOutline(null); return; }
   CourseMap.setOutline(j.outline, j.outline.complete ? null : 'コース図：読めなかった地図・写真があります（ネットにつながると作り直します）');
   if (!j.outline.complete) state.outlineFor = null;   // 次に描くときに頼み直す
@@ -477,7 +489,7 @@ async function deleteCalc() {
 function renderLineControls() {
   const s = state.refSession, sel = $('linesel');
   sel.textContent = '';
-  sel.disabled = $('editline').disabled = !s || !s.course || !state.overlay || !state.overlay.origin;
+  sel.disabled = $('editline').disabled = !s || !s.course || !state.overlay || !state.overlay.origin || !!state.outedit;
   $('delline').hidden = !s || !s.line_name || !!state.draft;
   if (!s) return;
   sel.append(el('option', { value: '' }, '書き出しの線（ロガーと同じ）'));
@@ -497,6 +509,7 @@ function renderDraft() {
   document.querySelector('.map').classList.toggle('editing', !!d);
   $('editline').disabled = !!d || $('linesel').disabled;
   $('delline').hidden = true;
+  renderOutlineControls();
   if (!d) { CourseMap.redraw(); renderLineControls(); return; }
   const t = $('linetarget');
   t.textContent = '';
@@ -627,6 +640,87 @@ async function watch() {
   } catch (e) { /* 次の知らせで読み直す */ }
 }
 
+// ---------------------------------------------------------------- コース図を直す（outedit.js）
+function renderOutlineControls() {
+  const o = state.outlineData, e = state.outedit;
+  $('editoutline').disabled = !!e || !!state.draft || !o || !$('outline').checked || !state.refSession ||
+                              state.outlineFor !== (state.refSession && state.refSession.id) || !CourseMap.ready();
+  $('editoutline').textContent = o && o.edited ? 'コース図を直す（直したもの）' : 'コース図を直す';
+  $('outedit').hidden = !e;
+  document.querySelector('.map').classList.toggle('editing', !!(e || state.draft));
+  if (!e) return;
+  const t = OutlineEditor.tool();
+  for (const b of document.querySelectorAll('#outedit [data-tool]')) b.classList.toggle('on', b.dataset.tool === t);
+  $('oehelp').textContent = OutlineEditor.TOOLS[t] || '';
+  $('oeundo').disabled = !OutlineEditor.canUndo();
+  $('oesave').disabled = !OutlineEditor.dirty();
+  $('oereset').hidden = !(o && o.edited);
+}
+
+function startOutlineEdit() {
+  const s = state.refSession, o = state.outlineData;
+  if (!s || !o || state.draft) return;
+  OutlineEditor.load(o, CourseMap.toXY, {
+    radius: () => { const v = +$('oeradius').value; return isFinite(v) ? Math.min(60, Math.max(0, v)) : 10; },
+    zebraW: () => { const v = +$('oezebraw').value; return isFinite(v) && v >= 0.2 && v <= 5 ? v : 1; },
+    boardText: () => $('oeboard').value.trim().slice(0, 12),
+    onChange: renderOutlineControls,
+  });
+  state.outedit = { sid: s.id, origin: state.overlay.origin.slice() };
+  CourseMap.setEditor(OutlineEditor);
+  renderOutlineControls();
+  renderLineControls();
+  status(o.edited ? '前に直したコース図を開きました' : '自動で作ったコース図を開きました。直したら「残す」を押してください', 'ok');
+}
+
+function stopOutlineEdit() {
+  OutlineEditor.stop();
+  state.outedit = null;
+  CourseMap.setEditor(null);
+  renderOutlineControls();
+  renderLineControls();
+}
+
+async function outlineRequest(action, body) {
+  let j;
+  try { j = await api('outline/' + action, body); } catch (e) { j = { ok: false, error: '裏の処理とつながっていません' }; }
+  if (!j.ok) { status(`コース図を${action === 'save' ? '残せません' : '戻せません'}（${j.error}）`, 'ng'); return false; }
+  state.outlineData = j.outline;
+  state.outlineFor = state.refSession && state.refSession.id;
+  stopOutlineEdit();
+  CourseMap.setOutline(j.outline);
+  return true;
+}
+
+$('editoutline').onclick = startOutlineEdit;
+for (const b of document.querySelectorAll('#outedit [data-tool]')) b.onclick = () => { OutlineEditor.setTool(b.dataset.tool); renderOutlineControls(); CourseMap.redraw(); };
+$('oeundo').onclick = () => { if (OutlineEditor.undo()) CourseMap.redraw(); };
+$('oecancel').onclick = () => {
+  if (OutlineEditor.dirty() && !confirm('直した分を残さずにやめますか？')) return;
+  stopOutlineEdit();
+  CourseMap.setOutline(state.outlineData);
+};
+$('oesave').onclick = async () => {
+  const s = state.refSession;
+  if (!s || !state.outedit) return;
+  if (await outlineRequest('save', { id: s.id, outline: OutlineEditor.dump(CourseMap.toLatLon) })) status('直したコース図を残しました（このコースでは次からこちらが出ます）', 'ok');
+};
+$('oereset').onclick = async () => {
+  const s = state.refSession;
+  if (!s || !confirm('手で直したコース図を消して、自動で作ったものに戻しますか？（消した分は戻せません）')) return;
+  if (await outlineRequest('reset', { id: s.id })) status('自動で作ったコース図に戻しました', 'ok');
+};
+// Ctrl+Z：直しているときだけ（字を打つ欄の中は、その欄の戻すに任せる）
+document.addEventListener('keydown', (e) => {
+  if (!state.outedit || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.shiftKey) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  e.preventDefault();
+  if (OutlineEditor.undo()) CourseMap.redraw();
+});
+// 残していない直しがあるまま閉じようとしたら聞く
+window.addEventListener('beforeunload', (e) => { if (state.outedit && OutlineEditor.dirty()) { e.preventDefault(); e.returnValue = ''; } });
+
 $('open').onclick = pickAndOpen;
 $('recent').onchange = (e) => { const p = e.target.value; e.target.value = ''; if (p) openPath(p); };
 for (const r of document.querySelectorAll('input[name=mode]')) r.onchange = () => { state.mode = r.value; render(); };
@@ -675,7 +769,7 @@ $('calccancel').onclick = () => $('calcdlg').close();
 $('calcexpr').onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveCalc(); } };
 $('vrate').onchange = (e) => VideoPane.setRate(+e.target.value);
 $('linesel').onchange = (e) => { const s = state.refSession; if (s) lineRequest('use', { course: s.course, name: e.target.value || null }); };
-$('editline').onclick = startEdit;
+$('editline').onclick = () => { if (!state.outedit) startEdit(); };
 $('cancelline').onclick = () => { state.draft = null; renderDraft(); };
 $('linetarget').onchange = (e) => { state.draft.selected = +e.target.value; renderDraft(); };
 $('linewidth').onchange = (e) => {
