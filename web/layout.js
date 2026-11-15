@@ -97,6 +97,9 @@ const Layout = (() => {
     } catch (e) { /* 標準で開く */ }
   }
   const isClosed = (name) => st.closed.includes(name);
+  // 枠の伸び方。割合（足して1）をそのまま flex-grow にすると、畳んだ枠の分だけ合計が1より小さくなり、
+  // flexbox は余りを配りきらずに隙間を残す（周の表を畳むと右に空きができた）。比は同じまま大きな数にして、いつも敷き詰める
+  const grow = (s) => `${s * 1000} 1 0px`;
 
   function build(n, dir) {
     if (typeof n === 'string') {
@@ -120,7 +123,7 @@ const Layout = (() => {
         box.append(g);
       }
       const el = build(c, n.d);
-      el.style.flex = typeof c === 'string' && isClosed(c) && !max ? `0 0 ${FOLDED}px` : `${n.s[i]} 1 0px`;
+      el.style.flex = typeof c === 'string' && isClosed(c) && !max ? `0 0 ${FOLDED}px` : grow(n.s[i]);
       box.append(el);
     });
     return box;
@@ -162,7 +165,7 @@ const Layout = (() => {
   function live(el, name, s, row) {
     const folded = !!name && isClosed(name);
     if (name) { el.classList.toggle('folded', folded); el.classList.toggle('vert', folded && row); }
-    el.style.flex = folded ? `0 0 ${FOLDED}px` : `${s} 1 0px`;
+    el.style.flex = folded ? `0 0 ${FOLDED}px` : grow(s);
   }
 
   function bindGutter(g) {
