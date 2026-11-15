@@ -26,6 +26,7 @@ select { max-width: 260px; }
 .seg label { padding: 4px 10px; cursor: pointer; font-size: 13px; }
 .seg input { display: none; }
 .seg label:has(input:checked) { background: var(--accent); color: #fff; }
+.seg.small label { padding: 1px 8px; font-size: 12px; }
 .status { color: var(--muted); font-size: 12px; }
 .status.ok { color: var(--ok); }
 .status.ng { color: var(--ng); }
@@ -106,6 +107,10 @@ body.resizing video, body.resizing canvas, body.moving video, body.moving canvas
 .sectable tr.secfirst td { border-top: 1px solid var(--line); }
 .sectable tr.secstat td { color: var(--muted); font-size: 11.5px; text-align: left; padding-bottom: 4px; }
 .sectable tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+.laptable th.valhead { cursor: pointer; }
+.laptable th.valhead:hover { color: var(--text); }
+.laptable td.val.faster { color: var(--ok); font-weight: 700; }
+.laptable td.val.slower { color: var(--ng); }
 .sectable .faster { color: var(--ok); }
 .sectable .slower { color: var(--ng); }
 .sectable tr.secsel td { background: var(--best); }

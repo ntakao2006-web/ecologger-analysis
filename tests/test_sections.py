@@ -171,6 +171,32 @@ class StoreSectionsTest(unittest.TestCase):
         self.store.set_splits(name, [], [])
         self.assertEqual(self.store.list()[0]['split_names'], [])
 
+    def test_lap_stats(self):
+        # 周の表の「値」（SP-10-39）：周ごとの最大・最小・平均。記録のチャンネルも計算チャンネルも、周の中の分だけで出す
+        self.store.formulas.save('ms', 'm/s', 'Speed / 3.6')
+        got = self.store.lap_stats(self.sid, 'app', ['Speed', 'ms', 'Nothing'])
+        it = self.store.items[self.sid]
+        s, pool = it['session'], it['laps']
+        self.assertEqual(set(got['laps']), {str(x['lap']) for x in pool})
+        lap = pool[1]
+        m = (s.t >= lap['start']) & (s.t <= lap['end'])
+        v = np.asarray(s.channels['Speed'], float)[m]
+        hi, lo, mean = got['laps'][str(lap['lap'])]['Speed']
+        self.assertAlmostEqual(hi, v.max(), places=3)
+        self.assertAlmostEqual(lo, v.min(), places=3)
+        self.assertAlmostEqual(mean, v.mean(), places=3)
+        self.assertLess(lo, mean)
+        self.assertLess(mean, hi)
+        ms = got['laps'][str(lap['lap'])]['ms']
+        self.assertAlmostEqual(ms[0], hi / 3.6, places=3)
+        self.assertIsNone(got['laps'][str(lap['lap'])]['Nothing'])
+        self.assertEqual(got['errors'], {'Nothing': 'この走行に無いチャンネル'})
+        # ロガーの数えの周でも出せる
+        lg = self.store.lap_stats(self.sid, 'logger', ['RPM'])
+        self.assertEqual(set(lg['laps']), {str(x['lap']) for x in s.laps})
+        with self.assertRaises(KeyError):
+            self.store.lap_stats('s999', 'app', ['Speed'])
+
     def test_errors(self):
         with self.assertRaises(ValueError):
             self.store.sections_auto(self.sid, 99)

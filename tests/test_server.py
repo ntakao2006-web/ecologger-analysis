@@ -216,6 +216,25 @@ class ServerTest(unittest.TestCase):
         finally:
             self.api('close', {'id': sid})
 
+    def test_lapstats_api(self):
+        # 周ごとの最大・最小・平均（SP-10-39）
+        d = write_sample(Path(self.tmp.name) / 'lapstats.ecorun')
+        code, j = self.api('open', {'path': str(d)})
+        sid = j['session']['id']
+        try:
+            code, j = self.api('lapstats', {'id': sid, 'mode': 'app', 'channels': ['Speed', 'RPM']})
+            self.assertEqual(code, 200, j)
+            first = j['laps'][min(j['laps'], key=int)]
+            self.assertEqual(len(first['Speed']), 3)
+            self.assertGreaterEqual(first['RPM'][0], first['RPM'][2])
+            self.assertEqual(j['errors'], {})
+            for bad in ({'id': sid, 'mode': 'x', 'channels': []}, {'id': sid, 'channels': 'Speed'}, {'id': 1, 'channels': []},
+                        {'id': sid, 'channels': [1]}, {'id': sid, 'channels': ['a'] * 25}, {'id': sid, 'channels': ['x' * 101]},
+                        {'id': 's999', 'channels': ['Speed']}):
+                self.assertEqual(self.api('lapstats', bad)[0], 400, bad)
+        finally:
+            self.api('close', {'id': sid})
+
     def with_video(self, name):
         """作りものの走行に、作りものの動画（中身は0〜255の繰り返し）を足す。動画は1周目の途中から2周目の途中まで"""
         d = write_sample(Path(self.tmp.name) / name)

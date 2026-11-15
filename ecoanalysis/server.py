@@ -214,6 +214,39 @@ class Store:
             lap['video'] = lap_videos(item['sid'], item['session'], item['lap'])
         return out
 
+    def lap_stats(self, sid, mode, channels):
+        """周ごとのチャンネルの最大・最小・平均（SP-10-39。周の表の「値」）。
+        mode：'app'（コースの線で切った周）か 'logger'。channels：記録のチャンネルか計算チャンネルの名前。
+        返す値：{laps: {周の番号: {名前: [最大, 最小, 平均] か None}}, errors: {名前: 計算できない理由}}"""
+        with self.lock:
+            it = self.items.get(sid)
+            if it is None:
+                raise KeyError('開いていない走行')
+            s = it['session']
+            pool = it['laps'] if mode == 'app' and it['laps'] is not None else s.laps
+            pool = [dict(x) for x in pool]
+        compiled = self.formulas.compiled()
+        rec = [c for c in channels if c in s.channels]
+        calc = [c for c in channels if c not in s.channels]
+        out, errors = {}, {}
+        for lap in pool:
+            m = (s.t >= lap['start']) & (s.t <= lap['end'])
+            vals = {c: np.asarray(s.channels[c], float)[m] for c in rec}
+            if calc and m.any():
+                got, why = formula.compute(calc, s.channels, s.t, m, compiled)
+                vals.update({c: np.asarray(v, float) for c, v in got.items()})
+                errors.update(why)
+            row = {}
+            for c in channels:
+                v = vals.get(c)
+                v = v[np.isfinite(v)] if v is not None and v.dtype.kind == 'f' else None
+                row[c] = None if v is None or not len(v) else [round(float(v.max()), 4), round(float(v.min()), 4), round(float(v.mean()), 4)]
+            out[str(lap['lap'])] = row
+        for c in channels:
+            if c not in s.channels and c not in compiled:
+                errors[c] = 'この走行に無いチャンネル'
+        return {'laps': out, 'errors': errors}
+
     # 計算チャンネル
     def _outline_inputs(self, sid):
         """コース図を作るもの：(コース名, 案内の周の lat, lon, 全部の走行の t, lat, lon, 周の数)。
@@ -673,6 +706,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'ok': False, 'error': str(e)}, 400)
             except OSError as e:
                 return self._json({'ok': False, 'error': f'残せませんでした（{e.strerror or e}）'}, 500)
+        if path == '/api/lapstats':              # 周ごとのチャンネルの最大・最小・平均（SP-10-39）
+            sid, mode, chans = body.get('id'), body.get('mode', 'app'), body.get('channels')
+            if not isinstance(sid, str) or mode not in ('app', 'logger') or not isinstance(chans, list) \
+                    or len(chans) > 24 or not all(isinstance(c, str) and len(c) <= 100 for c in chans):
+                return self._json({'ok': False, 'error': 'id・mode・channels の形が違う'}, 400)
+            try:
+                return self._json({'ok': True, **self.store.lap_stats(sid, mode, chans)})
+            except KeyError as e:
+                return self._json({'ok': False, 'error': str(e.args[0])}, 400)
         if path == '/api/sections/auto':         # 区間の線を基準の周のブレーキの踏み始めに置く（SP-10-13）
             sid, lap = body.get('id'), body.get('lap')
             if not isinstance(sid, str) or not isinstance(lap, int) or isinstance(lap, bool):

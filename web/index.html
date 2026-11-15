@@ -27,7 +27,13 @@
 <p id="modenote" class="modenote" hidden></p>
 <main class="layout" id="layout">
   <section class="pane laps" data-pane="laps">
-    <div class="gbar phead"><h2>周</h2><span class="grow"></span>
+    <div class="gbar phead"><h2>周</h2>
+      <div class="seg small" role="radiogroup" aria-label="周の表に出すもの">
+        <label title="セクターのタイムを並べます"><input type="radio" name="lapview" value="time" checked>タイム</label>
+        <label title="グラフに出しているチャンネルの、周ごとの最大・最小・平均を並べます。列ごとに良い端を緑・悪い端を赤にします"><input type="radio" name="lapview" value="val">値</label>
+      </div>
+      <select id="lapstat" aria-label="周ごとの値の出し方" hidden><option value="0">最大</option><option value="1">最小</option><option value="2">平均</option></select>
+      <span class="grow"></span>
       <button id="lapsfold" class="pbtn" type="button" title="周の表を畳んで、ほかの枠を広げる（細い帯を押すと開く）">◂</button><button class="pbtn" data-max type="button" title="この枠を大きくする（もう一度押すか Esc で戻す）。見出しのダブルクリックでも同じ">⤢</button></div>
     <div id="message" class="message" hidden></div>
     <div id="sessions"><p class="empty">「走行を開く…」で、走行のフォルダー（名前が .ecorun で終わるもの）を選びます。別の日の走行も続けて開けます。</p></div>

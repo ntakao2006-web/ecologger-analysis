@@ -7,6 +7,17 @@ const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つ
 const SEC_LAPS = 4;            // 区間の表に並べる周の数
 const SLOW_PCT = 5;            // 平均の周で外す遅さ（裏の sections.SLOW_RATIO と同じ）
 const DEFAULT_CHANNELS = ['Speed', 'Throttle', 'RPM', 'LongAccel', 'LatAccel'];
+const VAL_SLOW_PCT = 7;        // 周の表の「値」で色を付けるのは、タイムが中央値からこれより遅くない周だけ（アウトラップ・ピットの周を外す）
+const VAL_FLAT_PCT = 2;        // 列の良い端と悪い端の差が、そのチャンネルの動く幅（周の中の最大の最大〜最小の最小）のこれより小さければ色を付けない
+const STAT_NAMES = ['最大', '最小', '平均'];
+// 周の表の見せ方（SP-10-39）：lapView は 'time'（セクター）か 'val'（グラフのチャンネルの周ごとの値）、lapStat は 0 最大・1 最小・2 平均、
+// statDir はチャンネルごとの良い向き（1 大きいほど良い・-1 小さいほど良い。無ければ名前で決める）
+state.lapView = 'time'; state.lapStat = 0; state.statDir = {}; state.lapStats = new Map(); state.lapStatsWait = new Set();
+try {
+  if (localStorage.getItem('lapview') === 'val') state.lapView = 'val';
+  const st = Number(localStorage.getItem('lapstat')); if ([0, 1, 2].includes(st)) state.lapStat = st;
+  const d = JSON.parse(localStorage.getItem('statdir') || 'null'); if (d && typeof d === 'object') state.statDir = d;
+} catch (e) { /* 覚えていなくてよい */ }
 try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
 // コース図の塗り（SP-10-12）。ranges は塗り方・チャンネルごとに手で決めた段の範囲 [低, 高]（null は自動）
 state.paint = { mode: 'lap', ch: 'Speed', dotted: false, acc: false, marks: false, markCh: 'Speed', ranges: {} };
@@ -89,6 +100,12 @@ function bests() {
 }
 
 function render() {
+  renderTable();
+  renderPicked();
+}
+
+// 周の表だけを描き直す（グラフ・地図は取り直さない）
+function renderTable() {
   const box = $('sessions');
   box.textContent = '';
   if (!state.sessions.length) {
@@ -99,7 +116,6 @@ function render() {
     const best = bests();
     for (const s of state.sessions) box.append(sessionBlock(s, best[s.course || s.id]));
   }
-  renderPicked();
 }
 
 function sessionBlock(s, best) {
@@ -116,9 +132,11 @@ function sessionBlock(s, best) {
   if (state.mode === 'app' && !s.laps.app) block.append(el('p', { class: 'note' }, `コースの線で切れないので、ロガーの数えを出しています（${s.laps.app_reason}）`));
   if (!laps.length) { block.append(el('p', { class: 'empty' }, '周がありません')); return block; }
 
-  const nsec = Math.max(0, ...laps.map((x) => (x.sectors || []).length));
+  const vals = state.lapView === 'val' ? lapValues(s, laps) : null;
+  const nsec = vals ? 0 : Math.max(0, ...laps.map((x) => (x.sectors || []).length));
   const head = el('tr', {}, el('th', {}, ''), el('th', {}, '周'), el('th', {}, 'タイム'), el('th', { title: 'ベスト（同じコースの開いている走行の中で、測位の抜けた周を除く）との差' }, '差'));
   for (let i = 0; i < nsec; i++) head.append(el('th', {}, 'S' + (i + 1)));
+  if (vals) for (const c of vals.cols) head.append(c.th);
   head.append(el('th', {}, ''));
   const body = el('tbody');
   for (const x of laps) {
@@ -142,6 +160,7 @@ function sessionBlock(s, best) {
       const sb = best && has && !x.gap && Math.abs(v - (best.sectors[i] ?? Infinity)) < 0.0005;
       row.append(el('td', { class: 'num sec' + (sb ? ' sbest' : '') }, has ? v.toFixed(3) : '—'));
     }
+    if (vals) for (const c of vals.cols) row.append(c.cell(x));
     const marks = [];
     if (x.gap) marks.push(el('span', { class: 'mark warn', title: '周の中に1秒より長い測位の抜けがある。ベストからは外す' }, '測位の抜け'));
     if (compareLogger && !x.logger) marks.push(el('span', { class: 'mark', title: 'ロガーはこの周を数えていない' }, 'ロガーに無い'));
@@ -152,6 +171,7 @@ function sessionBlock(s, best) {
     body.append(row);
   }
   block.append(el('div', { class: 'tablewrap' }, el('table', { class: 'laptable' }, el('thead', {}, head), body)));
+  if (vals && vals.note) block.append(el('p', { class: 'note' }, vals.note));
   if (usingApp || nsec) { const t = theoryLine(s, usingApp); if (t) block.append(t); }
   if (usingApp && s.line_name) block.append(el('p', { class: 'note' }, `線の版「${s.line_name}」で切っています（ロガーとは線が違うので、ロガーのタイムとは比べません）`));
   if (compareLogger) {
@@ -161,6 +181,88 @@ function sessionBlock(s, best) {
   }
   if (s.notes.length) block.append(el('details', { class: 'notes' }, el('summary', {}, '覚え書き'), ...s.notes.map((n) => el('p', {}, n))));
   return block;
+}
+
+// ---------------------------------------------------------------- 周の表の「値」（SP-10-39・仕様 3-2・6-4）
+// グラフに出しているチャンネルの、周ごとの最大・最小・平均。列ごとに、良い端を緑・悪い端を赤にする
+// （色を付けるのは、測位の抜けが無く、タイムが中央値から VAL_SLOW_PCT % より遅くない周だけ）
+function statDir(name) {
+  const d = state.statDir[name];
+  return d === 1 || d === -1 ? d : (/temp/i.test(name) && !/volt/i.test(name) ? -1 : 1);     // 温度は低いほど良い（温度の電圧は除く）
+}
+function fmtVal(v) {
+  const a = Math.abs(v);
+  const t = v.toFixed(a >= 100 ? 0 : a >= 10 ? 1 : 2);
+  return /^-0(\.0+)?$/.test(t) ? t.slice(1) : t;     // 「-0.00」とは出さない
+}
+
+function lapValues(s, laps) {
+  const have = new Map(s.channels.map((c) => [c.name, c]));
+  for (const f of state.formulas) if (!have.has(f.name)) have.set(f.name, { name: f.name, label: f.name, unit: f.unit, calc: true, expr: f.expr });
+  // グラフのチャンネルをまだ選んでいなければ、グラフと同じ既定の分
+  const chans = state.channels === null ? DEFAULT_CHANNELS.filter((n) => have.has(n)).slice(0, 3) : state.channels.filter((n) => have.has(n));
+  if (!chans.length) return { cols: [], note: 'グラフに出すチャンネル（グラフの枠の「チャンネル」）を選ぶと、その周ごとの値がここに並びます' };
+  const sig = chans.map((n) => { const m = have.get(n); return m.calc ? `${n}=${m.expr}` : n; }).join('');
+  const key = `${s.id}|${state.mode}|${state.rev}|${sig}`;
+  const got = state.lapStats.get(key);
+  if (!got) fetchLapStats(key, s.id, chans);
+  const k = state.lapStat;
+  // 色を付ける周：抜けが無く、遅すぎない
+  const times = laps.filter((x) => !x.gap).map((x) => x.time_s).sort((a, b) => a - b);
+  const med = times.length ? times[Math.floor((times.length - 1) / 2)] : null;
+  const fair = (x) => !x.gap && med !== null && x.time_s <= med * (1 + VAL_SLOW_PCT / 100);
+  const cols = chans.map((n) => {
+    const m = have.get(n), dir = statDir(n);
+    const raw = (x) => (got && got.laps[String(x.lap)] && got.laps[String(x.lap)][n]) || null;
+    const val = (x) => { const r = raw(x); return r ? r[k] : null; };
+    const rows = got ? laps.filter(fair).map(raw).filter(Boolean) : [];
+    const pool = rows.map((r) => r[k]);
+    const hi = pool.length > 1 ? Math.max(...pool) : null, lo = pool.length > 1 ? Math.min(...pool) : null;
+    const span = rows.length ? Math.max(...rows.map((r) => r[0])) - Math.min(...rows.map((r) => r[1])) : 0;
+    const flat = hi === null || !(hi - lo >= span * VAL_FLAT_PCT / 100) || hi === lo;
+    const good = dir > 0 ? hi : lo, bad = dir > 0 ? lo : hi;
+    const th = el('th', { class: 'valhead', title: `${m.label || n}${m.unit ? '（' + m.unit + '）' : ''}の周ごとの${STAT_NAMES[k]}。` +
+      `${dir > 0 ? '大きい' : '小さい'}ほど良いとして、良い端を緑・悪い端を赤にしています（押すと向きを変えます）。` +
+      `どの周もほとんど同じ値（差がこのチャンネルの動く幅の${VAL_FLAT_PCT}%に満たない）なら色を付けません` },
+      `${m.label || n}${dir > 0 ? ' ↑' : ' ↓'}`);
+    th.onclick = () => {
+      state.statDir[n] = -dir;
+      try { localStorage.setItem('statdir', JSON.stringify(state.statDir)); } catch (e) { /* 覚えなくてよい */ }
+      renderTable();
+    };
+    const cell = (x) => {
+      if (!got) return el('td', { class: 'num val' }, '…');
+      const v = val(x);
+      if (v === null) return el('td', { class: 'num val' }, '—');
+      const on = !flat && fair(x);
+      const cls = on && v === good ? ' faster' : on && v === bad ? ' slower' : '';
+      return el('td', { class: 'num val' + cls }, fmtVal(v));
+    };
+    return { th, cell };
+  });
+  let note = null;
+  if (got && Object.keys(got.errors).length) note = Object.entries(got.errors).map(([n, e]) => `${n}：${e}`).join('　');
+  else if (got && got.fail) note = got.fail;
+  return { cols, note };
+}
+
+async function fetchLapStats(key, id, channels) {
+  if (state.lapStatsWait.has(key)) return;
+  state.lapStatsWait.add(key);
+  try {
+    const j = await api('lapstats', { id, mode: state.mode, channels });
+    state.lapStats.set(key, j.ok ? { laps: j.laps, errors: j.errors } : { laps: {}, errors: {}, fail: j.error });
+  } catch (e) {
+    state.lapStats.set(key, { laps: {}, errors: {}, fail: '裏の処理とつながっていません' });
+  } finally { state.lapStatsWait.delete(key); }
+  if (state.lapStats.size > 40) state.lapStats.delete(state.lapStats.keys().next().value);
+  renderTable();
+}
+
+function renderLapView() {
+  for (const r of document.querySelectorAll('input[name=lapview]')) r.checked = r.value === state.lapView;
+  $('lapstat').value = String(state.lapStat);
+  $('lapstat').hidden = state.lapView !== 'val';
 }
 
 // ---------------------------------------------------------------- 区間（コーナー）の表と理論ベスト（SP-10-13・仕様 3-2）
@@ -564,6 +666,7 @@ function renderChannelList(meta) {
 function setChannels(list) {
   state.channels = list;
   try { localStorage.setItem('channels', JSON.stringify(state.channels)); } catch (e) { /* 覚えなくてよい */ }
+  if (state.lapView === 'val') renderTable();  // 周の表の「値」の列も変わる
 }
 
 // ---------------------------------------------------------------- コース図の塗り
@@ -1196,6 +1299,19 @@ $('open').onclick = pickAndOpen;
 $('resume').onclick = resume;
 $('recent').onchange = (e) => { const p = e.target.value; e.target.value = ''; if (p) openPath(p); };
 for (const r of document.querySelectorAll('input[name=mode]')) r.onchange = () => { state.mode = r.value; render(); };
+for (const r of document.querySelectorAll('input[name=lapview]')) {
+  r.onchange = () => {
+    state.lapView = r.value;
+    try { localStorage.setItem('lapview', state.lapView); } catch (e) { /* 覚えなくてよい */ }
+    renderLapView(); renderTable();
+  };
+}
+$('lapstat').onchange = () => {
+  state.lapStat = Number($('lapstat').value);
+  try { localStorage.setItem('lapstat', String(state.lapStat)); } catch (e) { /* 覚えなくてよい */ }
+  renderTable();
+};
+renderLapView();
 for (const r of document.querySelectorAll('input[name=xaxis]')) r.onchange = () => { state.xaxis = r.value; renderPicked(); };
 $('refsel').onchange = (e) => { state.ref = e.target.value; renderPicked(); };
 // 区間の頭で差を0にするか（ふだんは切。選び直しは覚える）
