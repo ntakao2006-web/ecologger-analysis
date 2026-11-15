@@ -3,7 +3,7 @@
 
 const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 'dist', channels: null, ref: '', colors: new Map(), req: 0,
                 overlay: null, refSession: null, draft: null, outedit: null, formulas: [], help: null, editing: null, rev: null, notice: 0,
-                shiftSid: null, shiftWant: null };
+                shiftSid: null, shiftWant: null, sumScope: 'run' };
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
 const SEC_LAPS = 4;            // 区間の表に並べる周の数
 const SLOW_PCT = 5;            // 平均の周で外す遅さ（裏の sections.SLOW_RATIO と同じ）
@@ -149,6 +149,7 @@ function sessionBlock(s, best) {
       `${jstDate(s.t0_utc)}　周 ${laps.length}　測位 ${g ? `${g.points.toLocaleString()}点（${g.rate_hz ?? '?'}Hz・${g.source === 'sd' ? 'SD' : 'ロガーの記録'}）` : 'なし'}　読み込み ${s.load_s}秒`));
   if (state.mode === 'app' && !s.laps.app) block.append(el('p', { class: 'note' }, `コースの線で切れないので、ロガーの数えを出しています（${s.laps.app_reason}）`));
   if (!laps.length) { block.append(el('p', { class: 'empty' }, '周がありません')); return block; }
+  block.append(summaryBar(s));
 
   const vals = state.lapView === 'val' ? lapValues(s, laps) : null;
   const nsec = vals ? 0 : Math.max(0, ...laps.map((x) => (x.sectors || []).length));
@@ -281,6 +282,43 @@ function renderLapView() {
   for (const r of document.querySelectorAll('input[name=lapview]')) r.checked = r.value === state.lapView;
   $('lapstat').value = String(state.lapStat);
   $('lapstat').hidden = state.lapView !== 'val';
+}
+
+// ---------------------------------------------------------------- 走行のまとめ（SP-10-40・仕様 3-7）
+// 周の表の上に1段：ベスト・理論ベスト・連続ベスト・ベストと理論ベストの差・上位3周と5周の平均と幅（計算は web/summary.js）。
+// 使う周は、ふだんはこの走行だけ。同じコースの走行をほかにも開いていれば「同じコースの全部」に切り替えられる
+function summaryBar(s) {
+  const same = s.course ? state.sessions.filter((x) => x.course === s.course) : [s];
+  const all = state.sumScope === 'course' && same.length > 1;
+  const runs = (all ? same : [s]).map((x) => ({ laps: lapsOf(x), rolling: state.mode === 'app' && x.laps.app ? x.rolling : null }));
+  const r = RunSummary.of(runs);
+  const box = el('div', { class: 'runsum' });
+  if (same.length > 1) {
+    const sel = el('select', { title: 'まとめに使う周。タイヤやコースの状態が違う日の周と比べると届かない数になるので、ふだんはこの走行だけ' },
+      el('option', { value: 'run' }, 'この走行'), el('option', { value: 'course' }, `同じコースの${same.length}走行`));
+    sel.value = all ? 'course' : 'run';
+    sel.onchange = () => { state.sumScope = sel.value; renderTable(); };
+    box.append(sel);
+  }
+  if (!r.n) { box.append(el('span', { class: 'note' }, 'まとめに使える周がありません（測位の抜けた周は使いません）')); return box; }
+  const item = (name, v, title, extra) => el('span', { class: 'sumitem', title }, name + ' ', el('b', {}, lapTime(v)), ...(extra || []));
+  box.append(item('ベスト', r.best, `${r.n}周のうち一番速い周（測位の抜けた周は使わない）`));
+  if (r.theory !== null) {
+    const kind = r.theoryKind === 'splits' ? '区間' : 'セクター';
+    const d = el('span', { class: 'diff' + (r.bigGap ? ' bad' : '') }, ` (ベストと ${gap(r.gapToTheory)})`);
+    box.append(item(`理論ベスト（${kind}）`, r.theory,
+      `${kind}ごとのベストを足したもの。括弧はベストとの差。` + (r.bigGap ? `差が${RunSummary.BIG_GAP_S.toFixed(1)}秒を超えています：詰まった周があったか、${kind}ごとに走りがばらついているかを見ます` : ''), [d]));
+  }
+  if (r.rolling !== null) box.append(item('連続ベスト', r.rolling, '周の境目をまたいで、続けて走った区間を1周ぶんつないだときの最速'));
+  for (const t of [r.top3, r.top5]) {
+    if (!t) continue;
+    const extra = [el('span', { class: 'diff' }, ` 幅 ${t.range.toFixed(3)}`)];
+    if (t.n === 3 && r.verdict) extra.push(el('span', { class: `verdict ${r.verdict.cls}` }, r.verdict.text));
+    box.append(item(`上位${t.n}周 平均`, t.mean,
+      `速い順に${t.n}周の平均と、幅（その中の最も遅い周 − 最も速い周）。ベストの${Math.round(RunSummary.SLOW_X * 100)}%より遅い周（ピットに入った・止まった周）は入れない。` +
+      (t.n === 3 ? '上位3周の幅の目安（Garmin の使い方の資料）：0.5秒以下は上出来、0.5〜1.0秒はまあまあ、1.0〜2.0秒は安定が最優先、2.0秒より上はわけを探す' : ''), extra));
+  }
+  return box;
 }
 
 // ---------------------------------------------------------------- 区間（コーナー）の表と理論ベスト（SP-10-13・仕様 3-2）

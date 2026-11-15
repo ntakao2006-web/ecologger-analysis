@@ -218,3 +218,10 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 .modenote[hidden] { display: none; }
 button.primary:disabled { opacity: 0.45; }
 .shiftval { font-variant-numeric: tabular-nums; color: var(--muted); }
+.runsum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; font-size: 12px; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+.runsum select { font-size: 12px; padding: 1px 4px; }
+.runsum b { font-weight: 600; }
+.runsum .diff.bad { color: var(--ng); }
+.runsum .verdict { margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 11px; border: 1px solid currentColor; }
+.runsum .verdict.good { color: var(--ok); } .runsum .verdict.ok { color: var(--accent); }
+.runsum .verdict.warn { color: var(--warn); } .runsum .verdict.bad { color: var(--ng); }
