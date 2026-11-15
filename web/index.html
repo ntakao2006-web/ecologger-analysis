@@ -48,6 +48,7 @@
       </div>
       <details class="chanpick"><summary>チャンネル</summary><div id="chanlist" class="chanlist"></div></details>
       <label class="refpick">基準 <select id="refsel"></select></label>
+      <label class="refpick" title="比べる周が基準の周の線から左右に何 m ずれているか（進む向きの右が＋）を段に出します。横軸が距離のときだけ。実車の測位は2周の間で 1 m 前後ずれるので、1 m より小さいずれは読みません"><input type="checkbox" id="offline"> 線のずれ</label>
       <label class="refpick" title="基準の周との差のグラフを、区間ごとにその頭で0から描きます。1つのコーナーの中で得・損がどう増えるかを見るため（区間の線があるときだけ）"><input type="checkbox" id="zerosec" disabled> 区間の頭で差を0に</label>
       <span class="grow"></span>
       <span class="hint" title="拡大しているときは、差の段の見出しに、見ている範囲の頭から終わりまでのタイムの差を周ごとに出します">ホイールで拡大・ドラッグで移動・Shift＋ドラッグで範囲に寄る・ダブルクリックで全体</span>
@@ -96,6 +97,7 @@
       <label class="refpick" title="前後Gが −0.1 G より小さい所（減速）を点線にします"><input type="checkbox" id="decdot"> 減速を点線</label>
       <label class="refpick" title="測位の点ごとに、精度（hacc）の大きさの円を薄く描きます。線のずれが測位のせいか走りのせいかを見分けるため"><input type="checkbox" id="accring"> 測位の精度</label>
       <label class="refpick" title="周ごとに、ブレーキの踏み始め▼・離した所▲（前後Gから）と、選んだチャンネルのいちばん低い所●・高い所○を置きます"><input type="checkbox" id="markson"> 印</label>
+      <label class="refpick" title="カーソルの所（基準の周の車の横）に、周ごとの速さ・基準の線からの横のずれ・タイムの差を出します。2点の距離は、図の上で Shift を押しながらドラッグすると測れます"><input type="checkbox" id="curinfo"> カーソルの数</label>
       <select id="markch" hidden title="いちばん低い所・高い所を拾うチャンネル"></select>
     </div>
     <div id="lineedit" class="lineedit" hidden>

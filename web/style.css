@@ -147,6 +147,8 @@ body.resizing video, body.resizing canvas, body.moving video, body.moving canvas
 .map { display: flex; flex-direction: column; }
 .mapcv { flex: 1; min-height: 0; width: 100%; display: block; cursor: pointer; }
 .map.editing .mapcv { cursor: crosshair; }
+/* グラフの段の見出しの断り書き（SP-10-15） */
+.pnote { color: var(--muted); font-size: 11px; margin-left: 6px; }
 /* 摩擦円の枠「G」（SP-10-14） */
 .gpane { display: flex; flex-direction: column; }
 .gcv { flex: 1; min-height: 120px; width: 100%; display: block; }

@@ -86,8 +86,68 @@ console.log(JSON.stringify(out));
 """
 
 
+# 2026-11-16：Shift を押しながら引くと2点の距離（物差し）。図は動かさず、カーソルも動かさない。離すと消える（SP-10-15）
+RULER = r"""
+const fs = require('fs'), vm = require('vm');
+const noop = () => {};
+const texts = [];
+const ctx2d = new Proxy({}, { get: (t, k) => (k in t ? t[k] : k === 'measureText' ? () => ({ width: 10 }) : k === 'fillText' ? (s) => texts.push(String(s)) : noop),
+                              set: (t, k, v) => { t[k] = v; return true; } });
+const on = { cv: {}, win: {} };
+const add = (o) => (k, f) => { (o[k] = o[k] || []).push(f); };
+const cv = { clientWidth: 400, clientHeight: 300, width: 0, height: 0, style: {}, addEventListener: add(on.cv), getContext: () => ctx2d,
+             getBoundingClientRect() { return { left: 0, top: 0, width: 400, height: 300, right: 400, bottom: 300 }; } };
+const sandbox = { window: { devicePixelRatio: 1, addEventListener: add(on.win) }, document: { body: {} }, Image: class {}, requestAnimationFrame: (f) => f(),
+                  getComputedStyle: () => ({ getPropertyValue: () => '#111827' }), console };
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[process.argv.length - 1], 'utf8') + '\nthis.CourseMap = CourseMap;', sandbox);
+const M = sandbox.CourseMap;
+const n = 400, x = [], y = [], s = [], t = [], sp = [], off = [], dd = [];
+for (let i = 0; i < n; i++) { const a = 2 * Math.PI * i / n; x.push(300 * Math.cos(a)); y.push(300 * Math.sin(a)); s.push(i * 2 * Math.PI * 300 / n); t.push(i * 0.25);
+                              sp.push(100); off.push(1.5); dd.push(0.25); }
+const ref = { key: 'a:1', ref: true, label: '1周', track: { x, y, s, t, sp } };
+const other = { key: 'a:2', ref: false, label: '2周', track: { x, y, s, t, sp, off, dd } };
+let picks = 0, info = true;
+M.init(cv, { x: () => 'dist', color: () => '#3b82f6', lines: () => null, editing: () => false, onPick: () => { picks++; }, onPlace: noop,
+             photo: () => false, paint: () => ({ mode: 'lap', marks: false, curinfo: info }), onFollow: noop });
+M.show({ origin: [38.14, 140.78], laps: [ref, other] });
+M.setCursor(500);
+const out = {};
+out.info = texts.filter((v) => /km\/h|右 |秒/.test(v));
+const before = M.toScreen(38.14, 140.78);
+const ev = (x, y, shift) => ({ button: 0, clientX: x, clientY: y, shiftKey: shift, preventDefault: noop });
+const k = 268 / 600 * 0.95;                  // 全体（直径 600 m を少し余らせる）に収めたときの倍率のおよそ
+texts.length = 0;
+on.cv.mousedown.forEach((f) => f(ev(100, 150, true)));
+on.cv.mousemove.forEach((f) => f(ev(300, 150, true)));
+out.rulerTexts = texts.filter((v) => /^[0-9.]+ (m|km)$/.test(v));
+texts.length = 0;
+on.win.mouseup.forEach((f) => f(ev(300, 150, true)));
+out.afterUp = texts.filter((v) => /^[0-9.]+ (m|km)$/.test(v));
+out.picks = picks;
+out.moved = JSON.stringify(M.toScreen(38.14, 140.78)) !== JSON.stringify(before);
+info = false; texts.length = 0; M.redraw();
+out.infoOff = texts.filter((v) => /km\/h/.test(v)).length;
+console.log(JSON.stringify(out));
+"""
+
+
 @unittest.skipUnless(NODE, 'node が無い')
 class CourseMapTest(unittest.TestCase):
+    def test_ruler_and_cursor_info(self):
+        r = subprocess.run([NODE, '-e', RULER, str(JS)], capture_output=True, text=True, encoding='utf-8', timeout=20)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        o = json.loads(r.stdout)
+        self.assertIn('100 km/h', o['info'])                   # カーソルの所の数：速さ・横のずれ・タイムの差
+        self.assertIn('右 1.5 m', o['info'])
+        self.assertIn('+0.250 秒', o['info'])
+        self.assertEqual(len(o['rulerTexts']), 1)              # 物差しの距離が出る
+        self.assertRegex(o['rulerTexts'][0], r'^\d+(\.\d)? m$')
+        self.assertEqual(o['afterUp'], [])                    # 離すと消える（縮尺の「100m」は単位の前に空白が無い）
+        self.assertEqual(o['picks'], 0)                        # カーソルは動かさない
+        self.assertFalse(o['moved'])                           # 図も動かさない
+        self.assertEqual(o['infoOff'], 0)
+
     def test_tiny_canvas_does_not_hang(self):
         # 終わらないループがあれば、ここで時間切れになる
         r = subprocess.run([NODE, '-e', SCRIPT, str(JS)], capture_output=True, text=True, encoding='utf-8', timeout=20)

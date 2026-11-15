@@ -63,6 +63,7 @@ const Chart = (() => {
   function fmtY(v) { const a = Math.abs(v); return a >= 1000 ? v.toFixed(0) : a >= 10 ? v.toFixed(0) : a >= 1 ? v.toFixed(1) : v.toFixed(2); }
 
   function series(panel, lap) {
+    if (panel.kind === 'off') return lap.off ? { x: data.grid, y: lap.off } : null;
     if (panel.kind === 'delta') {
       if (!lap.delta) return null;
       const x = opts.x === 'dist' ? data.grid : data.ref_t;
@@ -76,6 +77,10 @@ const Chart = (() => {
     panels = [];
     const many = data.laps.filter((l) => l.delta).length >= 2;
     if (many) panels.push({ kind: 'delta', name: 'delta', label: '基準の周との差', unit: '秒', state: false });
+    // 線のずれ（SP-10-15）：距離の横軸で、比べる周があるときだけ
+    if (opts.offset && opts.x === 'dist' && data.distance && data.laps.filter((l) => l.off).length >= 2) {
+      panels.push({ kind: 'off', name: 'off', label: '線のずれ（基準の線から右が＋）', unit: 'm', state: false });
+    }
     for (const c of opts.channels) panels.push({ kind: 'chan', name: c.name, label: c.label || c.name, unit: c.unit, state: c.kind === 'state' });
   }
 
@@ -130,7 +135,7 @@ const Chart = (() => {
       }
     }
     if (!isFinite(lo)) { lo = 0; hi = 1; }
-    if (p.kind === 'delta') { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+    if (p.kind === 'delta' || p.kind === 'off') { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
     if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
     const padY = (hi - lo) * 0.08; lo -= padY; hi += padY;
     const py = (y) => PAD_T + (hi - y) / (hi - lo) * (h - PAD_T - PAD_B);
@@ -147,7 +152,11 @@ const Chart = (() => {
       const x = Math.round(px(v, w)) + 0.5;
       g.beginPath(); g.moveTo(x, PAD_T); g.lineTo(x, h - PAD_B); g.stroke();
     }
-    if (p.kind === 'delta') {     // 0 の線（基準の周）
+    if (p.kind === 'off') {       // 測位の誤差の内（±1 m）を薄く塗る
+      const a = py(Math.min(1, hi)), b = py(Math.max(-1, lo));
+      if (b > a) { g.fillStyle = css('--muted'); g.globalAlpha = 0.12; g.fillRect(PAD_L, a, w - PAD_L - PAD_R, b - a); g.globalAlpha = 1; }
+    }
+    if (p.kind === 'delta' || p.kind === 'off') {     // 0 の線（基準の周）
       g.strokeStyle = css('--muted'); const y = Math.round(py(0)) + 0.5;
       g.beginPath(); g.moveTo(PAD_L, y); g.lineTo(w - PAD_R, y); g.stroke();
     }
@@ -203,6 +212,12 @@ const Chart = (() => {
     name.textContent = p.unit ? `${p.label}（${p.unit}）` : p.label;
     p.head.append(name);
     if (p.kind === 'delta') rangeHead(p);
+    if (p.kind === 'off') {
+      const n = document.createElement('span');
+      n.className = 'pnote';
+      n.textContent = '1 m より小さいずれは読まない（実車の測位は同じ線でも2周の間で 1 m 前後ずれる。薄い帯が ±1 m）';
+      p.head.append(n);
+    }
     if (cursorX === null) return;
     for (const lap of data.laps) {
       const s = series(p, lap);
@@ -211,7 +226,8 @@ const Chart = (() => {
       item.className = 'pval';
       const sw = document.createElement('i');
       sw.style.background = opts.color(lap.key);
-      item.append(sw, v === null ? '—' : p.kind === 'delta' ? (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3) : fmtY(v));
+      item.append(sw, v === null ? '—' : p.kind === 'delta' ? (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(3)
+        : p.kind === 'off' ? (Math.abs(v) < 0.05 ? '0.0' : `${v > 0 ? '右' : '左'} ${Math.abs(v).toFixed(1)}`) : fmtY(v));
       p.head.append(item);
     }
   }
@@ -313,7 +329,7 @@ const Chart = (() => {
   }
 
   return {
-    // data：/api/overlay の返事。o：{x: 'dist'|'time', channels: [{name,label,unit,kind}], color(key), onCursor(x, 'hover'|'leave'|'pin')}
+    // data：/api/overlay の返事。o：{x: 'dist'|'time', channels: [{name,label,unit,kind}], color(key), onCursor(x, 'hover'|'leave'|'pin'), offset 線のずれの段を出すか}
     show(el, d, o, keepView) {
       root = el; data = d; opts = o;
       buildPanels(); layout();

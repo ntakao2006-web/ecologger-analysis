@@ -60,10 +60,12 @@ def cumulative(x, y):
     return np.concatenate(([0.0], np.cumsum(np.hypot(np.diff(x), np.diff(y)))))
 
 
-def project(ref_x, ref_y, ref_s, x, y):
-    """点を基準の線へ投影した距離。前から順に、直前に合った区間の近くだけを探す"""
+def project(ref_x, ref_y, ref_s, x, y, lateral=False):
+    """点を基準の線へ投影した距離。前から順に、直前に合った区間の近くだけを探す。
+    lateral=True なら (距離, 横のずれ) を返す。横のずれは基準の線から点までの m で、進む向きの右が＋（SP-10-15）"""
     n = len(ref_x) - 1
     out = np.empty(len(x))
+    off = np.empty(len(x))
     j = 0
     for i in range(len(x)):
         lo, hi = max(0, j - SEARCH_BACK), min(n, j + SEARCH_AHEAD)
@@ -75,7 +77,10 @@ def project(ref_x, ref_y, ref_s, x, y):
         k = int(np.argmin(d2))
         j = lo + k
         out[i] = ref_s[j] + u[k] * (ref_s[j + 1] - ref_s[j])
-    return out
+        if lateral:
+            cross = dx[k] * (y[i] - ay[k] - u[k] * dy[k]) - dy[k] * (x[i] - ax[k] - u[k] * dx[k])   # ＋は線の左
+            off[i] = -math.copysign(math.sqrt(d2[k]), cross) if cross else 0.0
+    return (out, off) if lateral else out
 
 
 def _monotone(s, length):
@@ -222,6 +227,16 @@ def _rate(grid, delta):
     return np.where(w > 0, (np.interp(b, grid, delta) - np.interp(a, grid, delta)) / np.where(w > 0, w, 1), 0.0)
 
 
+def _lap_speed(s_obj, m, a, kt):
+    """線の点の時刻 kt（周の頭からの秒）の速さ（km/h）。Speed のチャンネル、無ければ測位の速さ"""
+    if 'Speed' in s_obj.channels:
+        return _at(kt, s_obj.t[m] - a, np.asarray(s_obj.channels['Speed'], float)[m])
+    g = s_obj.gnss
+    if g is not None and 'speed_kmh' in g:
+        return _at(kt, np.asarray(g['t'], float) - a, g['speed_kmh'])
+    return np.full(len(kt), np.nan)
+
+
 def _thin(n, limit=MAX_POINTS):
     step = max(1, math.ceil(n / limit))
     idx = np.arange(0, n, step)
@@ -315,8 +330,9 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc
     周の行だけで計算する（積分は周の頭で0から）。
     paint：コース図の線を塗るチャンネル（線の点ごとの値を track.v に入れる）。mark：極大・極小の印を拾うチャンネル
     返す値：{ref, ref_length_m, distance: 距離が使えるか, laps: [{key, label, time_s, t, s, channels, calc_errors, delta,
-    track: {t, s, x, y, dd, rate, hacc, bad, v?, dec?}, marks: [{k, t, s, x, y, v}]}], grid}
-    track の dd は基準の周とのタイムの差、rate はその増え方（秒/m、＋は損）、bad は測位の質が悪い点（1）、
+    track: {t, s, x, y, dd, rate, off, sp, hacc, bad, v?, dec?}, marks: [{k, t, s, x, y, v}], off}], grid}
+    track の dd は基準の周とのタイムの差、rate はその増え方（秒/m、＋は損）、off は基準の線からの横のずれ（m、進む向きの右が＋）、
+    sp は速さ（km/h）、bad は測位の質が悪い点（1）、周の off は横のずれを grid の上で、
     dec は減速している点（1。前後Gがあるとき）。marks の k は on（ブレーキの踏み始め）・off（離した所）・min・max、
     v は on/off なら速さ、min/max なら mark の値。
     gsrc：摩擦円の G の出どころ（'imu'・'gnss'。None なら摩擦円の点を作らない）。作ると周ごとに g（friction_points）、
@@ -360,11 +376,13 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc
             ft = fs = None
             if i == ref:
                 ft, fx, fy, fs = rt, rx, ry, rs
+                off = np.zeros(len(rt))
             else:
                 tr = track(s_obj.gnss, a, b, origin)
                 if tr is not None:
                     ft, fx, fy = tr
-                    fs = _monotone(project(rx, ry, rs, fx, fy), length)
+                    fs, off = project(rx, ry, rs, fx, fy, lateral=True)
+                    fs = _monotone(fs, length)
             if fs is not None:
                 k = _thin(len(ft), MAX_TRACK)      # コース図の線（基準の周の頭の位置を原点にした m）
                 kt, ks = ft[k], fs[k]
@@ -374,6 +392,9 @@ def compare(items, channels, ref=None, calc=None, paint=None, mark='Speed', gsrc
                 row['delta'] = _nums(delta, 3)
                 tr['dd'] = _nums(np.interp(ks, grid, delta), 3)
                 tr['rate'] = _nums(np.interp(ks, grid, _rate(grid, delta)), 5)
+                tr['off'] = _nums(off[k], 2)                              # 基準の線からの横のずれ（m、右が＋。SP-10-15）
+                row['off'] = _nums(np.interp(grid, _strict(fs), off), 2)
+                tr['sp'] = _nums(_lap_speed(s_obj, m, a, kt), 1)
                 hacc, bad = _gnss_quality(s_obj.gnss, kt + a)
                 tr['hacc'] = _nums(hacc, 2)
                 tr['bad'] = [int(x) for x in bad]

@@ -20,6 +20,15 @@ class ProjectTest(unittest.TestCase):
         s = overlay.project(rx, ry, rs, x, np.full(4, 3.0))     # 3m 横を走っても、同じ所は同じ距離
         self.assertTrue(np.allclose(s, x))
 
+    def test_lateral_offset_is_right_positive(self):
+        rx = np.linspace(0, 100, 51)                             # 東へ進む線
+        ry = np.zeros_like(rx)
+        rs = overlay.cumulative(rx, ry)
+        x = np.array([10.0, 50.0, 90.0])
+        s, off = overlay.project(rx, ry, rs, x, np.array([-2.0, 0.0, 3.5]), lateral=True)
+        self.assertTrue(np.allclose(s, x))
+        self.assertTrue(np.allclose(off, [2.0, 0.0, -3.5]))      # 南（進む向きの右）が＋
+
     def test_monotone_and_ends(self):
         s = overlay._monotone(np.array([0.4, 5.0, 4.0, 9.0, 12.0]), 10.0)
         self.assertEqual(list(s), [0.0, 5.0, 5.0, 9.0, 10.0])

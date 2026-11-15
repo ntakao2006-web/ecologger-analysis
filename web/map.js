@@ -12,6 +12,7 @@ const CourseMap = (() => {
   let cv = null, data = null, opts = null, view = null, cursor = null, drag = null, moved = false;
   const tiles = new Map();      // 'z/x/y' → {img, state: 'loading'|'ok'|'ng'}
   let photoNote = null, pending = false, hover = null, paintNow = null;
+  let ruler = null;                          // 物差し {a: [x, y], b: [x, y]}（Shift を押しながら引いているあいだだけ）
   let outline = null, outlineNote = null;   // コース図 {lines: [[[lat, lon], …]]} と、作っている・作れないときの知らせ
   let outlineXY = null, outlineKey = null;  // コース図を m に直したもの（描くたびに直さない）
   let editor = null;                         // コース図のエディタ（OutlineEditor。直していないときは null）
@@ -585,12 +586,82 @@ const CourseMap = (() => {
     }
     if (tr.s[i] !== null) out.push(`${Math.round(tr.s[i])} m 地点`);
     if (tr.v && tr.v[i] !== null && tr.v[i] !== undefined) out.push(`${p.chLabel || p.ch}　${num(tr.v[i])}${p.unit ? ' ' + p.unit : ''}`);
+    if (!lap.ref && tr.off && tr.off[i] !== null && tr.off[i] !== undefined) out.push(`線のずれ　${fmtOff(tr.off[i])}`);
     if (!lap.ref && tr.dd && tr.dd[i] !== null) {
       out.push(`タイムの差　${tr.dd[i] > 0 ? '+' : ''}${tr.dd[i].toFixed(3)} 秒`);
       if (tr.rate && tr.rate[i] !== null) out.push(`増え方　${tr.rate[i] > 0 ? '+' : ''}${(tr.rate[i] * 1000).toFixed(1)} ms/m（${tr.rate[i] > 0 ? '損' : tr.rate[i] < 0 ? '得' : '同じ'}）`);
     }
     if (tr.hacc && tr.hacc[i] !== null) out.push(`測位の精度　±${tr.hacc[i].toFixed(2)} m${tr.bad && tr.bad[i] ? '（悪い）' : ''}`);
     return out;
+  }
+  function fmtOff(v) { return Math.abs(v) < 0.05 ? '0.0 m' : `${v > 0 ? '右' : '左'} ${Math.abs(v).toFixed(1)} m${Math.abs(v) < 1 ? '（1 m より小さく、読まない）' : ''}`; }
+  // 増える一方の配列 track[key] で、x のときの track[name] の値（null をまたぐ・範囲の外は null）
+  function valAt(track, key, name, x) {
+    const xa = track[key], ya = track[name];
+    if (!xa || !ya || !xa.length || x === null || x < xa[0] || x > xa[xa.length - 1]) return null;
+    let lo = 0, hi = xa.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xa[m] <= x) lo = m; else hi = m; }
+    const a = ya[lo], b = ya[hi];
+    if (a === null || b === null || a === undefined || b === undefined) return a ?? b ?? null;
+    const d = xa[hi] - xa[lo];
+    return d > 0 ? a + (b - a) * (x - xa[lo]) / d : a;
+  }
+  // カーソルの所の数（SP-10-15）：基準の周の車の横に、周ごとの速さ・横のずれ・タイムの差
+  function drawCursorInfo(g, w, h) {
+    const key = curKey(), ref = refLap(), p = carAt(ref);
+    if (!p) return;
+    const rows = [];
+    for (const lap of data.laps) {
+      if (!lap.track || !carAt(lap)) continue;
+      const tr = lap.track, sp = valAt(tr, key, 'sp', cursor), parts = [short(lap) + (lap.ref ? '（基準）' : ''), sp === null ? '— km/h' : `${Math.round(sp)} km/h`];
+      if (!lap.ref) {
+        const off = valAt(tr, key, 'off', cursor), dd = valAt(tr, key, 'dd', cursor);
+        parts.push(off === null ? '—' : Math.abs(off) < 0.05 ? '0.0 m' : `${off > 0 ? '右' : '左'} ${Math.abs(off).toFixed(1)} m`);
+        parts.push(dd === null ? '—' : Math.abs(dd) < 0.0005 ? '0.000 秒' : `${dd > 0 ? '+' : '−'}${Math.abs(dd).toFixed(3)} 秒`);
+      }
+      rows.push({ lap, parts });
+    }
+    if (!rows.length) return;
+    g.font = '12px "Yu Gothic UI", "Segoe UI", sans-serif';
+    const cols = [0, 1, 2, 3].map((c) => Math.max(0, ...rows.map((r) => (r.parts[c] ? g.measureText(r.parts[c]).width : 0))));
+    const gapX = 10, bw = 22 + cols.reduce((a, b) => a + b, 0) + gapX * 3 + 8, bh = rows.length * 17 + 8;
+    const [px, py] = P(p[0], p[1], w, h);
+    let bx = px + 18, by = py + 14;
+    if (bx + bw > w - 4) bx = px - 18 - bw;
+    if (by + bh > h - 4) by = py - 14 - bh;
+    bx = Math.max(4, bx); by = Math.max(4, by);
+    g.fillStyle = css('--panel'); g.globalAlpha = 0.92; g.fillRect(bx, by, bw, bh); g.globalAlpha = 1;
+    g.strokeStyle = css('--line'); g.lineWidth = 1; g.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    g.textBaseline = 'top';
+    rows.forEach((r, k) => {
+      const y = by + 5 + k * 17;
+      g.fillStyle = opts.color(r.lap.key); g.fillRect(bx + 8, y + 5, 10, 3);
+      let x = bx + 22;
+      r.parts.forEach((t, c) => {
+        g.fillStyle = c === 0 ? css('--text') : css('--muted');
+        if (c === 0) { g.textAlign = 'left'; g.fillText(t, x, y); } else { g.textAlign = 'right'; g.fillText(t, x + cols[c], y); }
+        x += cols[c] + gapX;
+      });
+    });
+    g.textAlign = 'left';
+  }
+  // 物差し（SP-10-15）：Shift を押しながら引いた2点の距離
+  function drawRuler(g, w, h) {
+    const [ax, ay] = P(ruler.a[0], ruler.a[1], w, h), [bx, by] = P(ruler.b[0], ruler.b[1], w, h);
+    const d = Math.hypot(ruler.b[0] - ruler.a[0], ruler.b[1] - ruler.a[1]);
+    g.save();
+    g.lineWidth = 4; g.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+    g.lineWidth = 2; g.strokeStyle = '#facc15';
+    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+    for (const [x, y] of [[ax, ay], [bx, by]]) { g.beginPath(); g.arc(x, y, 4, 0, 2 * Math.PI); g.fillStyle = '#facc15'; g.fill(); }
+    const t = d >= 1000 ? `${(d / 1000).toFixed(2)} km` : d >= 100 ? `${d.toFixed(0)} m` : `${d.toFixed(1)} m`;
+    g.font = '13px "Yu Gothic UI", "Segoe UI", sans-serif';
+    const tw = g.measureText(t).width + 12, mx = (ax + bx) / 2, my = (ay + by) / 2 - 16;
+    g.fillStyle = css('--panel'); g.fillRect(mx - tw / 2, my - 10, tw, 20);
+    g.strokeStyle = '#facc15'; g.lineWidth = 1; g.strokeRect(mx - tw / 2 + 0.5, my - 9.5, tw - 1, 19);
+    g.fillStyle = css('--text'); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(t, mx, my);
+    g.restore();
   }
   function drawHover(g, w, h) {
     const lines = hoverText(), tr = hover.lap.track;
@@ -696,7 +767,9 @@ const CourseMap = (() => {
     drawBoards(g, w, h);
     if (editor && editor.active()) editor.overlay(g, (x, y) => P(x, y, w, h), scale(w, h), dark);
     drawLegend(g, w, h, photo);
+    if (cursor !== null && p.curinfo && !(editor && editor.active())) drawCursorInfo(g, w, h);
     if (hover && !(editor && editor.active())) drawHover(g, w, h);
+    if (ruler) drawRuler(g, w, h);
     // 縮尺
     const k = scale(w, h), m = [10, 20, 50, 100, 200, 500, 1000].find((v) => v * k >= 60) || 1000;
     g.strokeStyle = photo ? '#ffffff' : css('--muted'); g.fillStyle = g.strokeStyle; g.lineWidth = 2;
@@ -875,6 +948,7 @@ const CourseMap = (() => {
         if (editor.down(x, y, geo(r))) { drag.edit = true; cv.style.cursor = 'grabbing'; }
       } else if (data && data.origin && !opts.editing()) {
         const r = cv.getBoundingClientRect();
+        if (e.shiftKey) { drag.ruler = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height); hover = null; return; }   // 物差し
         const si = splitEditing() ? pickSplit(e.clientX - r.left, e.clientY - r.top, r.width, r.height) : -1;
         if (si >= 0) { drag.split = { i: si, at: null }; hover = null; cv.style.cursor = 'grabbing'; return; }
         const lap = pickCar(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
@@ -885,6 +959,7 @@ const CourseMap = (() => {
       if (!drag) return;
       const was = drag; drag = null;
       if (was.edit) { editor.up(); cv.style.cursor = ''; draw(); return; }
+      if (was.ruler) { ruler = null; draw(); if (moved) return; }   // 引かずに放したら、いつもの Shift＋押す（追っているなら手前へ戻る）
       if (was.car) { cv.style.cursor = ''; if (!moved) step(was.x, was.y, e.shiftKey); draw(); return; }
       if (was.split) { cv.style.cursor = ''; if (opts.onSplit) opts.onSplit(was.split.i, moved ? lineAt(was.split.at) : null, moved ? was.split.at : null); return; }   // 追っているなら、ここで車を真ん中へ戻す。引かずに押しただけなら少し送る
       if (moved || !data || !data.origin) return;
@@ -907,6 +982,14 @@ const CourseMap = (() => {
         const r = cv.getBoundingClientRect();
         const [x, y] = U(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
         editor.move(x, y);
+        later();
+        return;
+      }
+      if (drag && drag.ruler) {               // 物差し：押した所からいまの所までの距離
+        if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) moved = true;
+        if (!moved) return;
+        const r = cv.getBoundingClientRect();
+        ruler = { a: drag.ruler, b: U(e.clientX - r.left, e.clientY - r.top, r.width, r.height) };
         later();
         return;
       }
@@ -967,7 +1050,8 @@ const CourseMap = (() => {
   return {
     // o：{x() 'dist'|'time', color(key), lines() {line, sectors, splits, splitLabels, splitSel, splitEdit, selected, draft}, editing(), onPick(x), onPlace({lat,lon,bearing}), photo() 航空写真を敷くか,
     //     splitEditing() 区間の線を直しているか, onSplitMove(i, {lat,lon,bearing}) 引いている途中, onSplit(i, 線か null, 横軸の値) 離した（null は押しただけ）,
-    //     paint() {mode 'lap'|'value'|'rate'|'delta', ch, chLabel, unit, lo, hi 段の範囲を手で（null は自動）, dotted, acc, marks, markLabel, markUnit}}
+    //     paint() {mode 'lap'|'value'|'rate'|'delta', ch, chLabel, unit, lo, hi 段の範囲を手で（null は自動）, dotted, acc, marks, markLabel, markUnit,
+    //              curinfo カーソルの所に周ごとの速さ・横のずれ・タイムの差を出すか}
     init(canvas, o) { cv = canvas; opts = o; bind(); },
     show(d, keepView) { const same = data && d && data.origin && d.origin && data.origin[0] === d.origin[0] && data.origin[1] === d.origin[1]; data = d; hover = null; if (!(keepView && same && view)) { fit(); followZoom = follow; } draw(); },
     // いま塗っている段の範囲（自動のときの数を入れ欄の見本に出すため）

@@ -20,7 +20,7 @@ try {
 } catch (e) { /* 覚えていなくてよい */ }
 try { const c = JSON.parse(localStorage.getItem('channels') || 'null'); if (Array.isArray(c)) state.channels = c; } catch (e) { /* 覚えていなくてよい */ }
 // コース図の塗り（SP-10-12）。ranges は塗り方・チャンネルごとに手で決めた段の範囲 [低, 高]（null は自動）
-state.paint = { mode: 'lap', ch: 'Speed', dotted: false, acc: false, marks: false, markCh: 'Speed', ranges: {} };
+state.paint = { mode: 'lap', ch: 'Speed', dotted: false, acc: false, marks: false, markCh: 'Speed', ranges: {}, curinfo: true };
 try { const p = JSON.parse(localStorage.getItem('mappaint') || 'null'); if (p && typeof p === 'object') Object.assign(state.paint, p); } catch (e) { /* 覚えていなくてよい */ }
 const $ = (id) => document.getElementById(id);
 // 摩擦円に描く G の出どころ（SP-10-14）：'imu'（ふだん）か 'gnss'（測位から計算）
@@ -703,7 +703,7 @@ function renderPaintControls(meta) {
   $('paintch').hidden = p.mode !== 'value';
   $('paintrange').hidden = p.mode === 'lap';
   $('markch').hidden = !p.marks;
-  $('decdot').checked = p.dotted; $('accring').checked = p.acc; $('markson').checked = p.marks;
+  $('decdot').checked = p.dotted; $('accring').checked = p.acc; $('markson').checked = p.marks; $('curinfo').checked = p.curinfo !== false;
   const r = p.ranges[rangeKey()] || [null, null];
   $('paintlo').value = r[0] === null ? '' : r[0];
   $('painthi').value = r[1] === null ? '' : r[1];
@@ -720,7 +720,8 @@ function paintForMap() {
   const p = state.paint, meta = state.meta || new Map(), c = meta.get(p.ch), mc = meta.get(p.markCh);
   const r = p.ranges[rangeKey()] || [null, null];
   return { mode: p.mode, ch: p.ch, chLabel: c ? c.label || c.name : p.ch, unit: c ? c.unit : '', lo: r[0], hi: r[1],
-           dotted: p.dotted, acc: p.acc, marks: p.marks, markLabel: mc ? mc.label || mc.name : p.markCh, markUnit: mc ? mc.unit : '' };
+           dotted: p.dotted, acc: p.acc, marks: p.marks, markLabel: mc ? mc.label || mc.name : p.markCh, markUnit: mc ? mc.unit : '',
+           curinfo: p.curinfo !== false };
 }
 
 // 塗りを変えたとき：裏に頼み直しが要る（塗る値・印のチャンネルが変わった）なら頼み直す。要らなければ描き直すだけ
@@ -785,7 +786,7 @@ async function renderPicked() {
   state.overlay = j; state.x = x;
   const refKey = j.laps[j.ref] && j.laps[j.ref].key;
   state.refSession = state.sessions.find((s) => refKey && refKey.startsWith(s.id + ':')) || null;
-  Chart.show($('plots'), j, { x, channels: state.channels.filter((n) => meta.has(n)).map((n) => meta.get(n)), color: colorFor,
+  Chart.show($('plots'), j, { x, channels: state.channels.filter((n) => meta.has(n)).map((n) => meta.get(n)), color: colorFor, offset: $('offline').checked,
                               onCursor: (v, kind) => { setCursors(v); VideoPane.cursor(v, kind); } }, true);
   CourseMap.show(j, true);
   GCircle.show(j);
@@ -1334,6 +1335,9 @@ for (const r of document.querySelectorAll('input[name=xaxis]')) r.onchange = () 
 $('refsel').onchange = (e) => { state.ref = e.target.value; renderPicked(); };
 // 区間の頭で差を0にするか（ふだんは切。選び直しは覚える）
 try { $('zerosec').checked = localStorage.getItem('zerosec') === '1'; } catch (e) { $('zerosec').checked = false; }
+// 線のずれの段（SP-10-15。ふだんは切。選び直しは覚える）
+try { $('offline').checked = localStorage.getItem('offline') === '1'; } catch (e) { $('offline').checked = false; }
+$('offline').onchange = () => { try { localStorage.setItem('offline', $('offline').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } renderPicked(); };
 $('zerosec').onchange = () => { try { localStorage.setItem('zerosec', $('zerosec').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } updateMarks(); };
 new ResizeObserver(() => Chart.redraw()).observe($('plots'));
 CourseMap.init($('mapcv'), {
@@ -1355,6 +1359,7 @@ $('markch').onchange = (e) => { state.paint.markCh = e.target.value; paintChange
 $('decdot').onchange = (e) => { state.paint.dotted = e.target.checked; paintChanged(); };
 $('accring').onchange = (e) => { state.paint.acc = e.target.checked; paintChanged(); };
 $('markson').onchange = (e) => { state.paint.marks = e.target.checked; paintChanged(); };
+$('curinfo').onchange = (e) => { state.paint.curinfo = e.target.checked; paintChanged(); };
 for (const id of ['paintlo', 'painthi']) {
   $(id).onchange = () => {
     const v = (x) => (x.trim() === '' || !isFinite(+x) ? null : +x);
