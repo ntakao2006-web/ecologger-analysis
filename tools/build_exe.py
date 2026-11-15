@@ -92,7 +92,7 @@ def check(timeout=60):
                     j = json.loads(r.read())
                 with urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=2) as r:
                     page = r.read().decode('utf-8')
-                ok = j.get('ok') and 'EcoLogger 解析' in page
+                ok = j.get('ok') and 'EcoLogger Analysis' in page
                 print(f'起動まで {time.time() - t0:.1f}秒：版 {j.get("version")}、表示 {j.get("mode")}、画面 {"OK" if ok else "NG"}')
                 return 0 if ok else 1
             except OSError:

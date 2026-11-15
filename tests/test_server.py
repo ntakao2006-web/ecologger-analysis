@@ -77,7 +77,7 @@ class ServerTest(unittest.TestCase):
         code, ctype, body = self.request('/', headers={})
         self.assertEqual(code, 200)
         self.assertIn('text/html', ctype)
-        self.assertIn('EcoLogger 解析'.encode('utf-8'), body)
+        self.assertIn(b'EcoLogger Analysis', body)
         for name, kind in (('app.js', 'javascript'), ('style.css', 'text/css')):
             code, ctype, _ = self.request(name, headers={})
             self.assertEqual(code, 200)

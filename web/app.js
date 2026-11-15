@@ -277,7 +277,7 @@ function showVideo(n) {
   $('videoEmpty').hidden = !!n;
   $('videoEmpty').textContent = state.picked.size && !n
     ? '選んだ周に動画がありません（動画が入っているのは、書き出しのときに動画を添えた走行だけです）'
-    : '選んだ周に動画があれば、ここに2周を上下に並べます。グラフやコース図のカーソルに合わせて動きます。';
+    : '選んだ周に動画があれば、ここに2周を並べます（枠が横長なら左右、縦長なら上下）。グラフやコース図のカーソルに合わせて動きます。';
 }
 
 // ---------------------------------------------------------------- 計算チャンネル
@@ -570,6 +570,9 @@ VideoPane.init($('vbox'), {
   onPlayState: (on) => { $('vplay').textContent = on ? '⏸ 止める' : '▶ 再生'; },
 });
 $('vplay').onclick = () => VideoPane.toggle();
+// チャンネルの一覧は、外を押すか Esc で閉じる
+document.addEventListener('pointerdown', (e) => { const d = document.querySelector('.chanpick'); if (d.open && !d.contains(e.target)) d.open = false; });
+document.addEventListener('keydown', (e) => { const d = document.querySelector('.chanpick'); if (e.key === 'Escape' && d.open) d.open = false; });
 $('calcexpr').oninput = scheduleCheck;
 $('calcsave').onclick = saveCalc;
 $('calcdel').onclick = deleteCalc;

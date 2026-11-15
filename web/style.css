@@ -25,13 +25,43 @@ select { max-width: 260px; }
 .status { color: var(--muted); font-size: 12px; }
 .status.ok { color: var(--ok); }
 .status.ng { color: var(--ng); }
-.layout { flex: 1; min-height: 0; display: grid; gap: 8px; padding: 8px;
-  grid-template-columns: minmax(440px, 36%) 1fr minmax(320px, 28%);
-  grid-template-rows: 1fr 1fr;
-  grid-template-areas: "laps graph video" "laps graph map"; }
-.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 0; overflow: auto; }
+/* 枠の並び：周の表｜グラフ｜（動画／コース図）。枠どうしは重ならず、間の仕切り（.gutter）をドラッグして大きさを変える。
+   大きさは layout.js が --wl（周の表の幅 px）・--wr（右の列の幅 割合）・--hv（動画の高さ 割合）で決める */
+.layout { flex: 1; min-height: 0; display: grid; padding: 8px;
+  grid-template-columns: var(--wl, 380px) 8px minmax(0, 1fr) 8px calc(var(--wr, .34) * 100%);
+  grid-template-rows: minmax(0, 1fr); }
+.rcol { min-width: 0; min-height: 0; display: grid; grid-template-rows: calc(var(--hv, .55) * 100%) 8px minmax(0, 1fr); }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 0; min-width: 0; overflow: auto; }
 .pane h2 { font-size: 13px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
-.laps { grid-area: laps; } .graph { grid-area: graph; } .video { grid-area: video; } .map { grid-area: map; }
+.laps .phead { margin-bottom: 6px; }
+.laps .phead h2 { margin: 0; }
+.gutter { position: relative; touch-action: none; outline: none; }
+.gutter::after { content: ""; position: absolute; border-radius: 2px; background: transparent; transition: background .12s; }
+.gutter.gv { cursor: col-resize; }
+.gutter.gv::after { left: 3px; width: 2px; top: 30%; bottom: 30%; background: var(--line); }
+.gutter.gh { cursor: row-resize; }
+.gutter.gh::after { top: 3px; height: 2px; left: 30%; right: 30%; background: var(--line); }
+.gutter:hover::after, .gutter:focus-visible::after, .gutter.dragging::after { background: var(--accent); top: 0; bottom: 0; left: 0; right: 0; }
+.gutter.gv:hover::after, .gutter.gv:focus-visible::after, .gutter.gv.dragging::after { left: 3px; right: 3px; }
+.gutter.gh:hover::after, .gutter.gh:focus-visible::after, .gutter.gh.dragging::after { top: 3px; bottom: 3px; }
+body.resizing { user-select: none; }
+body.resizing.col { cursor: col-resize; } body.resizing.row { cursor: row-resize; }
+body.resizing iframe, body.resizing video, body.resizing canvas { pointer-events: none; }
+.pbtn { font-size: 12px; line-height: 1.2; padding: 2px 7px; color: var(--muted); }
+.pbtn:hover { color: var(--text); border-color: var(--muted); }
+.phead { user-select: none; }
+/* 周の表を畳んだとき：左に細い帯だけ残す */
+.lapsopen { display: none; }
+.layout.laps-closed .laps { padding: 6px 0; overflow: hidden; }
+.layout.laps-closed .laps > :not(.lapsopen) { display: none; }
+.layout.laps-closed .lapsopen { display: block; width: 100%; height: 100%; border: none; background: none; padding: 4px 0;
+  writing-mode: vertical-rl; color: var(--muted); font-size: 12px; text-align: start; }
+.layout.laps-closed .lapsopen:hover { color: var(--accent); }
+/* 1つの枠を大きくしたとき（data-max）：ほかの枠と仕切りを隠す */
+.layout[data-max] { grid-template-columns: minmax(0, 1fr); }
+.layout[data-max] > :not(.maxpath), .rcol[data-max] > :not(.maxpath) { display: none; }
+.rcol[data-max] { grid-template-rows: minmax(0, 1fr); }
+.layout[data-max] .pbtn[data-max] { color: var(--accent); border-color: var(--accent); }
 .empty { color: var(--muted); margin: 0; }
 .message { border: 1px solid var(--ng); border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; }
 .message p { margin: 0 0 4px; color: var(--ng); font-weight: 600; }
@@ -44,10 +74,10 @@ select { max-width: 260px; }
 .sinfo { color: var(--muted); font-size: 12px; margin: 2px 0 6px; }
 .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
 .tablewrap { overflow-x: auto; }
-.laptable { border-collapse: collapse; width: 100%; font-size: 13px; }
-.laptable th { text-align: right; font-weight: 600; color: var(--muted); font-size: 12px; padding: 2px 5px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.laptable { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.laptable th { text-align: right; font-weight: 600; color: var(--muted); font-size: 12px; padding: 2px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .laptable th:first-child { width: 22px; }
-.laptable td { padding: 2px 5px; white-space: nowrap; }
+.laptable td { padding: 2px 4px; white-space: nowrap; }
 .laptable tbody tr:nth-child(even) { background: var(--row); }
 .laptable tr.best { background: var(--best); }
 .laptable tr.best .time { font-weight: 700; }
@@ -96,7 +126,8 @@ select { max-width: 260px; }
 .video .gbar select { font-size: 12px; padding: 2px 6px; }
 .vbox { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
 .vbox[hidden] { display: none; }
-.vslot { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.vbox.side { flex-direction: row; }   /* 枠が横長なら2本を左右に並べる（layout.js が決める） */
+.vslot { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .vhead { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 2px; }
 .vhead select { font-size: 12px; padding: 1px 4px; flex: 1 1 0; min-width: 0; max-width: none; }
 .vsw { width: 10px; height: 10px; border-radius: 2px; flex: none; }

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import __version__, server
 
-TITLE = 'EcoLogger 解析'
+TITLE = 'EcoLogger Analysis'
 # 窓（WebView2）の作業場所。一時フォルダーに作らせると閉じたあと消しそこねて溜まるので、決まった所に置く
 STORAGE = server.HOME / 'webview'
 RUNNING = server.HOME / 'running.json'
