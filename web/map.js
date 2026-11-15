@@ -157,24 +157,7 @@ const CourseMap = (() => {
 
   // コース図：道路の縁だけを薄く（周の線がコース幅のどこを通ったかを読むための下地）
   const ROAD_MIN_PX = 9;           // コース図の道の帯は、引いて見てもこの太さ（画素）より細くしない
-  const ZEBRA_MIN_PX = 5;          // ゼブラも、この太さより細くしない
-  // ゼブラ（赤白の縁石）の塗り：赤の斜めの縞を薄く
-  const zebraFill = {};
-  function zebra(g, photo, dark) {
-    const k = photo ? 'p' : dark ? 'd' : 'l';
-    if (!zebraFill[k]) {
-      const c = document.createElement('canvas'); c.width = c.height = 8;
-      const q = c.getContext('2d');
-      q.fillStyle = photo ? 'rgba(255, 255, 255, 0.4)' : dark ? 'rgba(229, 231, 235, 0.22)' : 'rgba(255, 255, 255, 0.7)';
-      q.fillRect(0, 0, 8, 8);
-      q.strokeStyle = photo ? 'rgba(239, 68, 68, 0.9)' : dark ? 'rgba(248, 113, 113, 0.7)' : 'rgba(220, 38, 38, 0.55)';
-      q.lineWidth = 3;
-      q.beginPath(); q.moveTo(-2, 10); q.lineTo(10, -2); q.moveTo(-2, 2); q.lineTo(2, -2); q.moveTo(6, 10); q.lineTo(10, 6); q.stroke();
-      zebraFill[k] = g.createPattern(c, 'repeat');
-    }
-    return zebraFill[k];
-  }
-
+  const ZEBRA_MIN_PX = 4;          // ゼブラの帯も、この太さより細くしない
   function drawOutline(g, w, h, photo) {
     if (!outline || !outline.lines) return;
     const dark = isDark();
@@ -191,11 +174,21 @@ const CourseMap = (() => {
     g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.9)' : fat ? (dark ? '#4b5563' : '#d4d9e0') : (dark ? '#6b7280' : '#a3abb6');
     g.lineWidth = photo ? 1.5 : fat ? ROAD_MIN_PX - roadPx + 2 : 2;
     for (const ln of outline.lines) { path(ln); g.stroke(); }
+    // ゼブラ：縁に沿った決まった幅の帯を、走る向きに1 mおきの赤白で（写真では縞を読み切れないので、ある区間だけを描く）
     if (outline.kerbs && outline.kerbs.length) {
-      // 縁石の幅は1 mほど。細く見えるときは縁取りで太らせて、最低 ZEBRA_MIN_PX の縞にする
-      const fill = zebra(g, photo, dark), pad = ZEBRA_MIN_PX - 1.2 * scale(w, h);
-      g.fillStyle = fill; g.strokeStyle = fill; g.lineWidth = pad;
-      for (const k of outline.kerbs) { path(k); g.closePath(); g.fill(); if (pad > 0) g.stroke(); }
+      const k = scale(w, h);
+      const dash = Math.max(3, 1.0 * k);
+      const white = photo ? 'rgba(255, 255, 255, 0.9)' : dark ? 'rgba(229, 231, 235, 0.5)' : 'rgba(255, 255, 255, 0.95)';
+      const red = photo ? 'rgba(239, 68, 68, 0.95)' : dark ? 'rgba(248, 113, 113, 0.85)' : 'rgba(220, 38, 38, 0.7)';
+      g.lineCap = 'butt';
+      for (const z of outline.kerbs) {
+        if (!z || !z.pts) continue;
+        const bw = Math.max(ZEBRA_MIN_PX, (z.w || 1) * k);
+        if (!dark && !photo) { path(z.pts); g.setLineDash([]); g.strokeStyle = 'rgba(156, 163, 175, 0.6)'; g.lineWidth = bw + 1.5; g.stroke(); }
+        path(z.pts); g.setLineDash([]); g.strokeStyle = white; g.lineWidth = bw; g.stroke();
+        path(z.pts); g.setLineDash([dash, dash]); g.strokeStyle = red; g.stroke();
+      }
+      g.setLineDash([]);
     }
     g.restore();
   }

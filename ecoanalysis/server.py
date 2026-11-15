@@ -183,21 +183,34 @@ class Store:
 
     # 計算チャンネル
     def outline(self, sid, rebuild=False):
-        """その走行のコースのコース図（道路の縁）。案内はアプリで切った周のいちばん速い周、走った幅は走行の全部の測位"""
+        """その走行のコースのコース図（道路の縁）。同じコースで開いている走行を全部まとめて使う：
+        案内はアプリで切った周のいちばん速い周、走った幅は全部の走行の測位（周が多いほど、コースの中の線を見分けやすい）"""
         with self.lock:
             it = self.items.get(sid)
             if it is None:
                 raise KeyError(f'開いていない走行：{sid!r}'[:200])
-            s, pool = it['session'], it['laps'] or []
-        g = s.gnss
-        if not g or not pool:
+            course = (it['session'].meta.get('course') or {}).get('name')
+            same = [it] + [x for k, x in self.items.items() if k != sid and course and
+                           (x['session'].meta.get('course') or {}).get('name') == course]
+            same = [(x['session'], list(x['laps'] or [])) for x in same]
+        t_all, la_all, lo_all, best, n_laps = [], [], [], None, 0
+        for k, (s, pool) in enumerate(same):
+            g = s.gnss
+            if not g or not pool:
+                continue
+            t = np.asarray(g['t'], float)
+            b = min(pool, key=lambda x: x['time_s'])
+            if best is None or b['time_s'] < best[0]:
+                m = (t >= b['start']) & (t <= b['end'])
+                best = (b['time_s'], np.asarray(g['lat'], float)[m], np.asarray(g['lon'], float)[m])
+            t_all.append(t - np.nanmin(t) + k * 1e7)        # 走行ごとに時刻を離す（通った回を走行をまたいでつなげない）
+            la_all.append(np.asarray(g['lat'], float))
+            lo_all.append(np.asarray(g['lon'], float))
+            n_laps += len(pool)
+        if best is None:
             raise outline.OutlineError('周が無いので、コース図を作れません')
-        best = min(pool, key=lambda x: x['time_s'])
-        t = np.asarray(g['t'], float)
-        m = (t >= best['start']) & (t <= best['end'])
-        course = (s.meta.get('course') or {}).get('name')
-        return self.outlines.get(course, np.asarray(g['lat'], float)[m], np.asarray(g['lon'], float)[m], rebuild,
-                                 t, g['lat'], g['lon'], laps=len(pool))
+        return self.outlines.get(course, best[1], best[2], rebuild,
+                                 np.concatenate(t_all), np.concatenate(la_all), np.concatenate(lo_all), laps=n_laps)
 
     def channel_names(self):
         """開いている走行の、元のチャンネルの名前"""

@@ -32,7 +32,7 @@ import numpy as np
 
 from . import __version__, mvt
 
-VERSION = 3                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す
+VERSION = 4                     # 作り方を変えたら上げる（残した図を作り直す）。2：ゼブラ（縁石）を足した。3：真ん中の線から測り直す。4：こぶ取り・ゼブラを帯に
 BV_URL = 'https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{x}/{y}.pbf'
 BV_Z = 16                       # 道路縁（縮尺 1/2500 の元）が入っている細かさ
 PHOTO_Z = 18
@@ -51,17 +51,26 @@ EDGE_CODES = range(2200, 2300)  # 道路縁（2201 真幅道路 など）。27xx
 EDGE_LEVEL = '2500'
 M_PER_DEG = 111320.0
 CENTER_WIN = 41                         # 真ん中の線：半分の幅をこの横断面の数（×2 m）の中央値と比べる（FILL_GAP の倍より長く）
-CENTER_TOL_M = 2.0                      # 半分の幅がそこからこれだけ外れた所は、片側が別の縁を拾ったとみなす
+CENTER_TOL_M = 0.3                      # 半分の幅がそこからこれだけ外れた所は、片側が別の縁を拾ったか、こぶとみなす
+CENTER_GROW = 3                         # その前後この横断面の数も使わない
 CENTER_SMOOTH = 9                       # 真ん中の線のならし（横断面の数）
 FILL_TOL_M = 3.0                        # 2回目：縁は半分の幅からこれだけの内に探す（外は別の道の縁）
-FILL_GAP = 20                           # 2回目：抜けがこの横断面の数（×2 m）までなら補う
+FILL_GAP = 35                           # 2回目：抜けがこの横断面の数（×2 m）までなら補う（ピット出口の合流など）
+FILL_SLOPE = 0.06                       # 2回目：補う抜けの両端の差は JUMP_M か、抜けの長さのこれだけ倍まで
 MIN_PIECE = 5                           # 2回目：これより短い切れ端は捨てる
+BUMP_WIN = 51                           # こぶ取り：前後この横断面の数（×2 m）の中央値と比べる
+BUMP_M = 0.5                            # こぶ取り：中央値からこれだけ飛び出したらこぶ
+BUMP_FOOT = 0.2                         # こぶ取り：中央値から BUMP_M のこれだけ倍より出ている所までをこぶの裾とみなす
+BUMP_GROW = 1                           # こぶ取り：裾のさらに前後この横断面の数も補い直す
+ZEBRA_GAP = 5                           # ゼブラの区間：抜けがこの横断面の数（×2 m）までならつなぐ
+ZEBRA_MIN = 6                           # ゼブラの区間：この横断面の数（×2 m）より短いものは捨てる（ピット出口の矢羽根など）
+ZEBRA_W_M = 1.0                         # ゼブラの帯の幅（m）。写真では幅を読み切れないので決まった幅で描く
 KERB_IN_M, KERB_OUT_M = 3.0, 4.0        # ゼブラ（赤白の縁石）を、縁から内へ・外へこれだけの幅で探す
 KERB_ALONG_M = 2.0                      # 走る向きに前後これだけの幅で見る（赤と白が1 mほどで交互に並ぶ）
 KERB_ALONG_STEP_M = 0.5
 KERB_MIN_FLIPS = 2                      # 白と赤みの入れ替わりがこれだけあればゼブラ（白線は入れ替わらない）
-KERB_GAP = 2                            # ゼブラの抜けがこの横断面の数までなら続いているとみなす
-KERB_MIN_RUN = 3                        # ゼブラはこの横断面の数（×2 m）より長く続くものだけ
+KERB_GAP = 2                            # 写真の拾いの抜けがこの横断面の数までならつなぐ
+KERB_MIN_RUN = 1                        # 写真の1つの横断面ごとの拾い（まとめは build で）
 TIMEOUT_S = 8
 MAX_BYTES = 2 << 20
 ATTRIBUTION = '国土地理院の地理院地図Vector（道路縁）と航空写真を加工して作成'
@@ -377,6 +386,28 @@ class Outlines:
         pink = ~white & (r > 90) & (r - g >= 5) & (b - g >= -3)
         return white, pink
 
+    @staticmethod
+    def zebra_spans(kb, d):
+        """片側の写真の拾い kb (n, 2)（内・外の距離）と縁 d (n,) から、ゼブラのある区間と、帯の真ん中の縁からの距離。
+        [(横断面の番号の配列, 距離)]。写真では縞がにじんで途切れ途切れに拾えるので、ZEBRA_GAP までの抜けはつなぎ、
+        短いものは捨てる。帯の位置は区間の中の中央値1つにする（縁に沿った揃った帯にするため）"""
+        n = len(d)
+        have = np.isfinite(kb[:, 0]) & np.isfinite(d)
+        for run in _runs(~have):
+            if len(run) <= ZEBRA_GAP and len(run) < n:
+                a, b = (run[0] - 1) % n, (run[-1] + 1) % n
+                if have[a] and have[b]:
+                    have[run] = True
+        out = []
+        for run in _runs(have & np.isfinite(d)):
+            if len(run) < ZEBRA_MIN:
+                continue
+            run = np.asarray(run)
+            mid = (kb[run, 0] + kb[run, 1]) / 2 - d[run]
+            off = float(np.nanmedian(mid)) if np.isfinite(mid).any() else ZEBRA_W_M / 2
+            out.append((run, off))
+        return out
+
     def kerbs(self, origin, gx, gy, nx, ny, tx, ty, d):
         """縁 d (n, 2) の近くのゼブラ（赤白の縁石）。左右それぞれ (内の距離, 外の距離) の配列 (n, 2, 2)（無ければ NaN）。
         縁に沿って白と赤みが交互に並ぶ所を探す（白線は途切れないので、交互の数で分ける）"""
@@ -524,7 +555,10 @@ class Outlines:
         n = len(gx)
         both = np.isfinite(d[:, 0]) & np.isfinite(d[:, 1])
         half = np.where(both, (d[:, 0] + d[:, 1]) / 2, np.nan)
-        ok = both & (np.abs(half - _median_circular(half, CENTER_WIN)) < CENTER_TOL_M)   # 片側が別の縁を拾った所は使わない
+        bad = both & (np.abs(half - _median_circular(half, CENTER_WIN)) >= CENTER_TOL_M)  # 片側が別の縁を拾った所・こぶは使わない
+        for k in range(1, CENTER_GROW + 1):
+            bad = bad | np.roll(bad, k) | np.roll(bad, -k)
+        ok = both & ~bad
         good = np.flatnonzero(ok)
         if len(good) < n * 0.3:
             return None
@@ -548,16 +582,51 @@ class Outlines:
             for run in _runs(np.isfinite(v)):               # 短い切れ端は捨てる
                 if len(run) < MIN_PIECE:
                     v[run] = np.nan
+            v = Outlines.debump(v)                          # 抜けの手前で縁が曲がり込んでいると、両端が合わず補えないので先にも削る
             for run in _runs(~np.isfinite(v)):              # FILL_GAP 個までの抜けは、両端が近ければ線形に補う
                 if len(run) > FILL_GAP or len(run) == n:
                     continue
                 a, b = (run[0] - 1) % n, (run[-1] + 1) % n
-                if abs(v[a] - v[b]) > JUMP_M:
+                if abs(v[a] - v[b]) > max(JUMP_M, FILL_SLOPE * STEP_M * (len(run) + 1)):
                     continue
                 w = (np.arange(len(run)) + 1) / (len(run) + 1)
                 v[run] = v[a] + (v[b] - v[a]) * w
-            out[:, side] = v
+            out[:, side] = Outlines.debump(v)
         return out
+
+    @staticmethod
+    def debump(v):
+        """真ん中から縁までの距離 v (n,) の、短いこぶ・切れ込みを削る。縁は前後数十 m ではゆっくりしか変わらないので、
+        前後 BUMP_WIN の中央値から BUMP_M より飛び出した所（脇道との合流で地図の縁が曲がり込む所など）を、前後から補い直す。
+        中央値は坂（幅がだんだん変わる所）にはそのまま沿うので、本当の幅の変わり目は削らない"""
+        n = len(v)
+        v = v.copy()
+        for _ in range(2):
+            med = _median_circular(v, BUMP_WIN)
+            dev = np.where(np.isfinite(v) & np.isfinite(med), np.abs(v - med), 0.0)
+            bad = dev > BUMP_M
+            if not bad.any():
+                break
+            # こぶの裾も入れる：BUMP_M の BUMP_FOOT 倍より飛び出している続きのうち、こぶを含むもの
+            soft = dev > BUMP_M * BUMP_FOOT
+            grow = np.zeros(n, bool)
+            for run in _runs(soft):
+                if bad[run].any():
+                    grow[run] = True
+            g2 = grow.copy()
+            for k in range(1, BUMP_GROW + 1):
+                g2 |= np.roll(grow, k) | np.roll(grow, -k)
+            grow = g2 & np.isfinite(v)
+            for run in _runs(grow):
+                if len(run) >= n:
+                    continue
+                a, b = (run[0] - 1) % n, (run[-1] + 1) % n
+                if not (np.isfinite(v[a]) and np.isfinite(v[b])):
+                    v[run] = med[run]
+                    continue
+                w = (np.arange(len(run)) + 1) / (len(run) + 1)
+                v[run] = v[a] + (v[b] - v[a]) * w
+        return v
 
     def build(self, lat, lon, t_all=None, lat_all=None, lon_all=None):
         """lat・lon：案内にする周。t_all・lat_all・lon_all：走行の全部の測位（縁がコースの中を通っていないかを見る）。
@@ -623,15 +692,11 @@ class Outlines:
         self._pcache = {}
         kerbs = []
         for side, sg in ((0, 1.0), (1, -1.0)):
-            for run in _runs(np.isfinite(kb[:, side, 0])):
-                if len(run) < KERB_MIN_RUN:
-                    continue
-                run = np.asarray(run)
-                ri, ro = kb[run, side, 0], kb[run, side, 1]
-                xo, yo = gx[run] + sg * nx[run] * ro, gy[run] + sg * ny[run] * ro
-                xi, yi = gx[run] + sg * nx[run] * ri, gy[run] + sg * ny[run] * ri
-                xs, ys = np.r_[xo, xi[::-1]], np.r_[yo, yi[::-1]]
-                kerbs.append([[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(xs, ys)])
+            for run, off in self.zebra_spans(kb[:, side], d[:, side]):
+                c = d[run, side] + off                      # 縁からの決まった距離に帯の真ん中
+                xs, ys = gx[run] + sg * nx[run] * c, gy[run] + sg * ny[run] * c
+                kerbs.append({'w': ZEBRA_W_M,
+                              'pts': [[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(xs, ys)]})
         return {'version': VERSION, 'lines': lines, 'kerbs': kerbs, 'share': share, 'attribution': ATTRIBUTION,
                 'complete': bool(ok_v and ok_p),
                 'width_m': [round(float(np.nanpercentile(width, q)), 1) for q in (5, 50, 95)] if np.isfinite(width).any() else None}

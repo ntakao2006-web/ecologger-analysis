@@ -218,7 +218,9 @@ class OutlineTest(unittest.TestCase):
         la, lo = circle(R_CAR, 0, 2 * math.pi, 800)
         out = o.build(la, lo)
         self.assertTrue(out['kerbs'])
-        pts = np.concatenate([np.asarray(k) for k in out['kerbs']])
+        pts = np.concatenate([np.asarray(k['pts']) for k in out['kerbs']])
+        self.assertTrue(all(k['w'] == outline.ZEBRA_W_M for k in out['kerbs']))
+        self.assertEqual(len(out['kerbs']), 1)                     # 途切れずに1本の帯
         x, y = (pts[:, 1] - LON0) * KX, (pts[:, 0] - LAT0) * outline.M_PER_DEG
         r, a = np.hypot(x, y), np.arctan2(y, x)
         self.assertTrue(np.all((a > 0.1) & (a < 0.9)))          # 赤白の所だけ。白線の所は拾わない
@@ -240,6 +242,17 @@ class OutlineTest(unittest.TestCase):
         self.assertLess(np.max(np.abs(inner[0] - R_IN)), 0.5)             # 別の道の縁（80 m）を拾わない
         self.assertGreater(len(inner[0]), 0.97 * 2 * math.pi * R_IN / outline.STEP_M)
         self.assertGreater(out['share']['filled'], 0.0)
+
+    def test_bump_at_a_side_road_is_removed(self):
+        # 内の縁が脇道との合流で 1.5 m 奥へ曲がり込む（長さ 20 m ほど）。コースの縁ではないので削る
+        a = np.linspace(0, 2 * math.pi, 2000)
+        rr = R_IN - 1.5 * np.exp(-((a - 2.0) / 0.08) ** 2)
+        self.edge_lines = [to_latlon(rr * np.cos(a), rr * np.sin(a)), circle(R_OUT)]
+        o = outline.Outlines(self.tmp.name, Photos(offline=True), fetch=self.fetch)
+        out = o.build(*circle(R_CAR, 0, 2 * math.pi, 800))
+        inner = [x for x in self.radii(out) if np.median(x) < R_CAR]
+        self.assertEqual(len(inner), 1)
+        self.assertLess(np.max(np.abs(inner[0] - R_IN)), 0.3)
 
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
