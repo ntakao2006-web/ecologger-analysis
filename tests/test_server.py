@@ -134,6 +134,29 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.api('overlay', {'laps': [], 'mark': ['x']})[0], 400)
         self.api('close', {'id': sid})
 
+    def test_outline(self):
+        # コース図（SP-10-19）：ネットへは出さない（地図は 404、写真は「無い」を返す偽物）
+        class NoPhotos:
+            def get(self, z, x, y):
+                return 'none', None
+        store = self.srv.store
+        real = store.outlines
+        store.outlines = server.outline.Outlines(self.home, NoPhotos(), fetch=lambda url: (404, b''))
+        try:
+            sid = self.api('open', {'path': str(self.sample)})[1]['session']['id']
+            code, j = self.api('outline', {'id': sid})
+            self.assertEqual(code, 200, j)
+            o = j['outline']
+            self.assertEqual(o['laps'], len(store.items[sid]['laps']))
+            self.assertTrue(o['complete'])
+            self.assertEqual(o['lines'], [])
+            self.assertIn('国土地理院', o['attribution'])
+            self.assertEqual(self.api('outline', {'id': 's999'})[0], 400)
+            self.assertEqual(self.api('outline', {})[0], 400)
+            self.api('close', {'id': sid})
+        finally:
+            store.outlines = real
+
     def with_video(self, name):
         """作りものの走行に、作りものの動画（中身は0〜255の繰り返し）を足す。動画は1周目の途中から2周目の途中まで"""
         d = write_sample(Path(self.tmp.name) / name)

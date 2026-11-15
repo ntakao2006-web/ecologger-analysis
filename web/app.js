@@ -320,10 +320,30 @@ async function renderPicked() {
                               onCursor: (v, kind) => { CourseMap.setCursor(v); VideoPane.cursor(v, kind); } }, true);
   CourseMap.show(j, true);
   CourseMap.setCursor(Chart.cursor());
+  loadOutline();
   showAutoRange();
   showVideo(VideoPane.show(j));
   VideoPane.cursor(Chart.cursor(), 'pin');
   renderLineControls();
+}
+
+// コース図（道路の縁）：基準の周の走行のコースで頼む。コースごとに裏が残すので、2回目からはすぐ出る
+async function loadOutline() {
+  const s = state.refSession;
+  if (!$('outline').checked || !s) { CourseMap.setOutline(null); return; }
+  if (state.outlineFor === s.id && state.outlineData) { CourseMap.setOutline(state.outlineData); return; }
+  if (state.outlineFor === s.id) return;            // 作っている
+  const id = s.id;
+  state.outlineFor = id; state.outlineData = null;
+  CourseMap.setOutline(null, 'コース図を作っています…（初めてのコースは数秒〜十数秒）');
+  let j;
+  try { j = await api('outline', { id }); } catch (e) { j = { ok: false, error: '裏の処理とつながっていません' }; }
+  if (state.outlineFor !== id) return;              // そのあいだに基準の走行が変わった
+  if (!j.ok) { state.outlineFor = null; CourseMap.setOutline(null, `コース図を作れません（${j.error}）`); return; }
+  state.outlineData = j.outline;
+  if (!$('outline').checked) { CourseMap.setOutline(null); return; }
+  CourseMap.setOutline(j.outline, j.outline.complete ? null : 'コース図：読めなかった地図・写真があります（ネットにつながると作り直します）');
+  if (!j.outline.complete) state.outlineFor = null;   // 次に描くときに頼み直す
 }
 
 function showVideo(n) {
@@ -635,6 +655,9 @@ for (const id of ['paintlo', 'painthi']) {
 // 航空写真を敷くか（ふだんは敷く。選び直しは覚える）
 try { $('photo').checked = localStorage.getItem('photo') !== '0'; } catch (e) { $('photo').checked = true; }
 $('photo').onchange = () => { try { localStorage.setItem('photo', $('photo').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } CourseMap.redraw(); };
+// コース図を描くか（ふだんは描く。選び直しは覚える）
+try { $('outline').checked = localStorage.getItem('outline') !== '0'; } catch (e) { $('outline').checked = true; }
+$('outline').onchange = () => { try { localStorage.setItem('outline', $('outline').checked ? '1' : '0'); } catch (e) { /* 覚えなくてよい */ } loadOutline(); };
 new ResizeObserver(() => CourseMap.redraw()).observe($('mapcv'));
 VideoPane.init($('vbox'), {
   x: () => state.x, color: colorFor, rate: () => +$('vrate').value,

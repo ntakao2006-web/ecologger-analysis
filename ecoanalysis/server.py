@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from . import __version__, formula, laps, lines, overlay, session, tiles
+from . import __version__, formula, laps, lines, outline, overlay, session, tiles
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 HOME = Path.home() / '.ecologger-analysis'
@@ -63,6 +63,7 @@ class Store:
         self.lines = lines.Lines(self.home / 'lines.json')
         self.formulas = formula.Formulas(self.home / 'channels.json')
         self.tiles = tiles.Tiles(self.home)
+        self.outlines = outline.Outlines(self.home, self.tiles)
 
     @property
     def cache(self):
@@ -181,6 +182,23 @@ class Store:
         return out
 
     # 計算チャンネル
+    def outline(self, sid, rebuild=False):
+        """その走行のコースのコース図（道路の縁）。案内はアプリで切った周のいちばん速い周、走った幅は走行の全部の測位"""
+        with self.lock:
+            it = self.items.get(sid)
+            if it is None:
+                raise KeyError(f'開いていない走行：{sid!r}'[:200])
+            s, pool = it['session'], it['laps'] or []
+        g = s.gnss
+        if not g or not pool:
+            raise outline.OutlineError('周が無いので、コース図を作れません')
+        best = min(pool, key=lambda x: x['time_s'])
+        t = np.asarray(g['t'], float)
+        m = (t >= best['start']) & (t <= best['end'])
+        course = (s.meta.get('course') or {}).get('name')
+        return self.outlines.get(course, np.asarray(g['lat'], float)[m], np.asarray(g['lon'], float)[m], rebuild,
+                                 t, g['lat'], g['lon'], laps=len(pool))
+
     def channel_names(self):
         """開いている走行の、元のチャンネルの名前"""
         with self.lock:
@@ -496,6 +514,16 @@ class Handler(BaseHTTPRequestHandler):
                                                                     paint, mark)})
             except KeyError as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
+        if path == '/api/outline':
+            sid, rebuild = body.get('id'), bool(body.get('rebuild'))
+            if not isinstance(sid, str):
+                return self._json({'ok': False, 'error': 'id が無い'}, 400)
+            try:
+                return self._json({'ok': True, 'outline': self.store.outline(sid, rebuild)})
+            except KeyError as e:
+                return self._json({'ok': False, 'error': str(e.args[0])}, 400)
+            except outline.OutlineError as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
         if path.startswith('/api/lines/'):
             try:
                 sessions = self.store.set_lines(path.rsplit('/', 1)[1], body.get('course'), body.get('name'),

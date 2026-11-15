@@ -1,6 +1,6 @@
 # 使っている部品とライセンス
 
-`python tools/check_licenses.py --md` の出力（Windows、2026-11-14）。部品を足したら作り直す。
+`python tools/check_licenses.py --md` の出力（Windows、2026-11-15）。部品を足したら作り直す。
 
 | 名前 | 版 | ライセンス | 判定 |
 |---|---|---|---|
@@ -8,6 +8,7 @@
 | cffi | 2.1.1 | MIT-0 | OK |
 | clr_loader | 0.3.1 | MIT License（LICENSE の頭） | OK |
 | numpy | 2.5.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | OK |
+| pillow | 13.0.0 | MIT-CMU | OK |
 | proxy_tools | 0.1.0 | MIT / MIT License | OK |
 | pycparser | 3.12 | BSD-3-Clause | OK |
 | pythonnet | 3.2.1 | MIT | OK |
@@ -41,3 +42,6 @@
 
 - **航空写真**：国土地理院「地理院タイル」の全国最新写真（シームレス）。アプリには同梱せず、使う人の PC が見るときに取って
   `~/.ecologger-analysis/tiles/` に残す。地理院タイルの利用の決まりに従い、図の右下に「出典：国土地理院」を出す。
+- **道路縁**：国土地理院「地理院地図Vector」（最適化ベクトルタイル）の道路縁。同じく使うときに取って
+  `~/.ecologger-analysis/tiles/gsi-bvmap/` に残す。コース図（`ecoanalysis/outline.py`）はこれと航空写真を加工して作るので、
+  図の右下に「国土地理院のデータを加工して作成」と出す。できたコース図は `~/.ecologger-analysis/outlines/` に残す。

@@ -3,6 +3,7 @@
 // 座標は、重ね合わせの返事の origin（基準の周の頭の位置）を原点にした m（東が x、北が y）。
 // 航空写真（国土地理院のタイル）を下に敷ける。タイルは裏の /tiles/gsi/ から読み（裏が手元に残す）、
 // 四隅を同じ座標へ直して置く（コースの広さなら、平面に直した誤差は1 mより小さい）。
+// コース図（道路の両側の縁。裏の outline.py が国土地理院のデータから作る）を、周の線の下に薄く描ける。
 'use strict';
 
 const CourseMap = (() => {
@@ -10,6 +11,7 @@ const CourseMap = (() => {
   let cv = null, data = null, opts = null, view = null, cursor = null, drag = null, moved = false;
   const tiles = new Map();      // 'z/x/y' → {img, state: 'loading'|'ok'|'ng'}
   let photoNote = null, pending = false, hover = null, paintNow = null;
+  let outline = null, outlineNote = null;   // コース図 {lines: [[[lat, lon], …]]} と、作っている・作れないときの知らせ
 
   function css(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
 
@@ -152,6 +154,21 @@ const CourseMap = (() => {
   const DIV = { light: ['#1c5cab', '#e4e3df', '#c62f2e'], dark: ['#5598e7', '#d9d8d3', '#ee7a79'] };
   const BAD = '#9ca3af';
   const MARK_NAMES = { on: '▼ ブレーキの踏み始め', off: '▲ ブレーキを離した所', min: '● いちばん低い所', max: '○ いちばん高い所' };
+
+  // コース図：道路の縁だけを薄く（周の線がコース幅のどこを通ったかを読むための下地）
+  function drawOutline(g, w, h, photo) {
+    if (!outline || !outline.lines) return;
+    g.save();
+    g.lineJoin = 'round'; g.lineCap = 'round';
+    g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.75)' : (isDark() ? '#4b5563' : '#cdd2d9');
+    g.lineWidth = photo ? 1.5 : 3;
+    for (const ln of outline.lines) {
+      g.beginPath();
+      ln.forEach((q, i) => { const [px, py] = P(...toXY(q[0], q[1]), w, h); if (i) g.lineTo(px, py); else g.moveTo(px, py); });
+      g.stroke();
+    }
+    g.restore();
+  }
 
   function paintOpts() { return (opts.paint && opts.paint()) || { mode: 'lap' }; }
   function isDark() {
@@ -415,6 +432,7 @@ const CourseMap = (() => {
     }
     const photo = !!(opts.photo && opts.photo());
     if (photo) drawPhoto(g, w, h);
+    drawOutline(g, w, h, photo);
     const p = paintOpts(), dark = photo || isDark();
     const tgt = target(p), vals = tgt ? series(tgt, p) : null;
     const rng = vals ? range(vals, p) : null;
@@ -466,13 +484,19 @@ const CourseMap = (() => {
     g.beginPath(); g.moveTo(PAD, h - PAD); g.lineTo(PAD + m * k, h - PAD); g.stroke();
     g.font = '11px "Yu Gothic UI", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'bottom';
     g.fillText(m >= 1000 ? `${m / 1000}km` : `${m}m`, PAD, h - PAD - 4);
-    // 写真の出典（地理院タイルの決まり）と、読めないときの知らせ
-    if (photo) {
+    // 写真・コース図の出典（地理院のデータの決まり）と、読めない・作っているときの知らせ
+    const hasOutline = !!(outline && outline.lines && outline.lines.length);
+    if (photo || hasOutline) {
       g.font = '10px "Yu Gothic UI", sans-serif'; g.textAlign = 'right'; g.textBaseline = 'bottom';
-      const src = '出典：国土地理院', tw = g.measureText(src).width;
-      g.fillStyle = 'rgba(0, 0, 0, 0.55)'; g.fillRect(w - tw - 10, h - 17, tw + 10, 17);
-      g.fillStyle = '#ffffff'; g.fillText(src, w - 5, h - 3);
-      if (photoNote) { g.textAlign = 'center'; g.textBaseline = 'top'; g.font = '12px "Yu Gothic UI", sans-serif'; g.fillStyle = '#fde68a'; g.fillText(photoNote, w / 2, 8); }
+      const src = photo ? (hasOutline ? '出典：国土地理院（コース図は加工して作成）' : '出典：国土地理院') : 'コース図：国土地理院のデータを加工して作成';
+      const tw = g.measureText(src).width;
+      g.fillStyle = photo ? 'rgba(0, 0, 0, 0.55)' : css('--panel'); g.fillRect(w - tw - 10, h - 17, tw + 10, 17);
+      g.fillStyle = photo ? '#ffffff' : css('--muted'); g.fillText(src, w - 5, h - 3);
+    }
+    const note = (photo && photoNote) || outlineNote;
+    if (note) {
+      g.textAlign = 'center'; g.textBaseline = 'top'; g.font = '12px "Yu Gothic UI", sans-serif';
+      g.fillStyle = photo ? '#fde68a' : css('--muted'); g.fillText(note, w / 2, 8);
     }
   }
 
@@ -546,6 +570,8 @@ const CourseMap = (() => {
     // いま塗っている段の範囲（自動のときの数を入れ欄の見本に出すため）
     paintRange() { return paintNow && paintNow.rng; },
     setCursor(x) { cursor = x; draw(); },
+    // コース図（null で消す）と、図の上に出す知らせ（作っている・作れない）
+    setOutline(o, note) { outline = o || null; outlineNote = note || null; draw(); },
     redraw() { draw(); },
     clear() { data = null; cursor = null; hover = null; if (cv) { const [g, w, h] = size(); g.clearRect(0, 0, w, h); } },
   };
