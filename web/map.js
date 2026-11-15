@@ -12,6 +12,7 @@ const CourseMap = (() => {
   let cv = null, data = null, opts = null, view = null, cursor = null, drag = null, moved = false;
   const tiles = new Map();      // 'z/x/y' → {img, state: 'loading'|'ok'|'ng'}
   let photoNote = null, pending = false, hover = null, paintNow = null;
+  let highlights = [];                       // 伸びしろの大きい区間 [{a, b（基準の周の距離 m）, label}]（SP-10-41）
   let ruler = null;                          // 物差し {a: [x, y], b: [x, y]}（Shift を押しながら引いているあいだだけ）
   let outline = null, outlineNote = null;   // コース図 {lines: [[[lat, lon], …]]} と、作っている・作れないときの知らせ
   let outlineXY = null, outlineKey = null;  // コース図を m に直したもの（描くたびに直さない）
@@ -200,6 +201,33 @@ const CourseMap = (() => {
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xa[m] <= x) lo = m; else hi = m; }
     const d = xa[hi] - xa[lo], f = d > 0 ? (x - xa[lo]) / d : 0;
     return [track.x[lo] + (track.x[hi] - track.x[lo]) * f, track.y[lo] + (track.y[hi] - track.y[lo]) * f];
+  }
+
+  // 伸びしろの大きい区間：基準の周の線の上に太い帯と番号の丸（SP-10-41）
+  function drawHighlights(g, w, h, photo) {
+    const lap = refLap();
+    if (!lap || !highlights.length) return;
+    const t = lap.track;
+    for (const hl of highlights) {
+      g.beginPath();
+      let on = false, mid = null, md = Infinity;
+      for (let i = 0; i < t.x.length; i++) {
+        const s = t.s[i];
+        if (t.x[i] === null || s === null || s < hl.a || s > hl.b) { on = false; continue; }
+        const [px, py] = P(t.x[i], t.y[i], w, h);
+        if (on) g.lineTo(px, py); else { g.moveTo(px, py); on = true; }
+        const dm = Math.abs(s - (hl.a + hl.b) / 2);
+        if (dm < md) { md = dm; mid = [px, py]; }
+      }
+      g.lineCap = 'round'; g.lineJoin = 'round';
+      g.strokeStyle = photo ? 'rgba(255, 255, 255, 0.38)' : (isDark() ? 'rgba(255, 255, 255, 0.22)' : 'rgba(17, 24, 39, 0.16)'); g.lineWidth = 20; g.stroke();
+      g.lineCap = 'butt';
+      if (!mid) continue;
+      g.beginPath(); g.arc(mid[0], mid[1], 11, 0, Math.PI * 2);
+      g.fillStyle = '#111827'; g.fill(); g.lineWidth = 2; g.strokeStyle = '#ffffff'; g.stroke();
+      g.fillStyle = '#ffffff'; g.font = 'bold 12px "Yu Gothic UI", "Segoe UI", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(hl.label, mid[0], mid[1] + 0.5);
+    }
   }
 
   function drawLine(g, line, w, h, color, width, label, dashed) {
@@ -726,6 +754,7 @@ const CourseMap = (() => {
     const rng = vals ? range(vals, p) : null;
     paintNow = { p, tgt, vals, rng, dark };
     if (p.acc) for (const lap of data.laps) drawAccuracy(g, lap, w, h);
+    drawHighlights(g, w, h, photo);
     // 周の線（塗る周か基準の周を最後に描いて上に出す）
     const top = tgt || data.laps.find((l) => l.ref);
     const order = data.laps.slice().sort((a, b) => (a === top ? 1 : 0) - (b === top ? 1 : 0));
@@ -1073,6 +1102,8 @@ const CourseMap = (() => {
     setEditor(ed) { editor = ed || null; if (cv) cv.style.cursor = ''; draw(); },
     toXY: (lat, lon) => toXY(lat, lon),
     toLatLon: (x, y) => toLatLon(x, y),
+    // 伸びしろの大きい区間を目立たせる（[{a, b, label}]、a・b は基準の周の距離 m。[] で消す）
+    setHighlights(list) { highlights = Array.isArray(list) ? list : []; draw(); },
     // 基準の周の横軸の値 a〜b の所が収まるように寄る（区間の表から寄るとき）。追うのはやめる
     fitRange(a, b) {
       const lap = data && data.origin && refLap();

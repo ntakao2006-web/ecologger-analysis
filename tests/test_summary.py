@@ -19,6 +19,16 @@ const out = { one: S.of([a]), two: S.of([a, b]), none: S.of([{ laps: [lap(100, n
               pit: S.of([{ laps: [lap(132.5), lap(129.5), lap(139.2), lap(160.6), lap(681.0)] }]),
               sectors: S.of([{ laps: [{ time_s: 60, sectors: [30, 30] }, { time_s: 61, sectors: [29, 32] }] }]),
               v: [0.3, 0.5, 0.8, 1.5, 2.5].map((r) => S.of([{ laps: [lap(100), lap(100 + r / 2), lap(100 + r)] }]).verdict.text) };
+const sec = (brake, kmh, at, en, ex) => ({ brake_m: brake, min_kmh: kmh, min_at_m: at, entry: en, exit: ex });
+const L = (lap, t, sp, secs) => ({ lap, time_s: t, splits: sp, sec: secs });
+const r = { id: 's1', laps: [
+  L(1, 60.0, [20.0, 20.0, 20.0], [sec(null, 80, 10, 100, 90), sec(5, 70, 30, 120, 110), sec(0, 60, 40, 130, 120)]),   // ベストの周
+  L(2, 60.6, [19.6, 20.4, 20.6], [sec(null, 82, 12, 101, 92), sec(0, 68, 31, 119, 108), sec(2, 59, 41, 128, 118)]),
+  L(3, 60.4, [20.3, 19.9, 20.2], [sec(null, 79, 9, 99, 91), sec(9, 72, 26, 121, 112), sec(1, 61, 39, 131, 121)]),
+  L(4, 90.0, [30, 30, 30], [null, null, null])] };                   // 詰まった周：平均の周からは区間ごとに外れる
+out.oppBest = S.opportunities([r], 'best');
+out.oppMean = S.opportunities([r], 'mean');
+out.oppNone = S.opportunities([{ id: 'x', laps: [L(1, 60, [30, 30], [])] }], 'best');
 console.log(JSON.stringify(out));
 '''
 
@@ -55,6 +65,33 @@ class SummaryTest(unittest.TestCase):
         self.assertAlmostEqual(o['sectors']['theory'], 59.0)
         self.assertTrue(o['sectors']['bigGap'] is False and o['sectors']['top3'] is None)
         self.assertEqual(o['v'], ['上出来', '上出来', 'まあまあ', '安定が最優先', 'わけを探す'])
+
+    def test_opportunities(self):
+        r = subprocess.run([NODE, '-e', SCRIPT, str(JS)], capture_output=True, text=True, encoding='utf-8', timeout=20)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        o = json.loads(r.stdout)
+        b = o['oppBest']
+        self.assertEqual(b['partnerLap'], {'id': 's1', 'lap': 1})
+        self.assertEqual([x['i'] for x in b['items']], [0, 1])              # 区間3はベストの周がベスト（伸びしろ0）なので出さない
+        first = b['items'][0]
+        self.assertAlmostEqual(first['loss'], 0.4)
+        self.assertEqual(first['bestLap'], {'id': 's1', 'lap': 2})
+        self.assertIsNone(first['brake'])                                   # 区間1（コントロールラインから）はブレーキを比べない
+        self.assertAlmostEqual(first['apexKmh'], 2)
+        self.assertAlmostEqual(first['exit'], 2)
+        second = b['items'][1]
+        self.assertAlmostEqual(second['loss'], 0.1)
+        self.assertAlmostEqual(second['brake'], 4)                          # 3周は 4 m 奥で踏んだ
+        self.assertAlmostEqual(second['apexAt'], -4)
+        self.assertAlmostEqual(b['total'], 0.5)
+        m = o['oppMean']                                                    # 平均の周：90秒の周は区間ごとに外れる
+        self.assertIsNone(m['partnerLap'])
+        self.assertEqual(len(m['items']), 3)
+        self.assertEqual([x['i'] for x in m['items']], [0, 2, 1])       # 0.367・0.267・0.200 秒
+        top = m['items'][1]
+        self.assertAlmostEqual(top['partnerTime'], (20.0 + 20.6 + 20.2) / 3)
+        self.assertAlmostEqual(top['brake'], 0 - 1.0)                       # ベストの周 0 m、平均 (0+2+1)/3
+        self.assertEqual(o['oppNone']['items'], [])
 
 
 if __name__ == '__main__':

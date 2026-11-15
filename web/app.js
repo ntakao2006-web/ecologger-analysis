@@ -3,7 +3,7 @@
 
 const state = { sessions: [], mode: 'app', picked: new Set(), xaxis: 'dist', x: 'dist', channels: null, ref: '', colors: new Map(), req: 0,
                 overlay: null, refSession: null, draft: null, outedit: null, formulas: [], help: null, editing: null, rev: null, notice: 0,
-                shiftSid: null, shiftWant: null, sumScope: 'run' };
+                shiftSid: null, shiftWant: null, sumScope: 'run', oppPartner: 'best', oppMap: true };
 const MAX_PICK = 8;            // 線の色の数（見分けのつく色は8つまで）
 const SEC_LAPS = 4;            // 区間の表に並べる周の数
 const SLOW_PCT = 5;            // 平均の周で外す遅さ（裏の sections.SLOW_RATIO と同じ）
@@ -358,6 +358,7 @@ function sectionLaps() {
 function renderSections() {
   const box = $('secbox');
   box.textContent = '';
+  CourseMap.setHighlights([]);            // 伸びしろの区間は、下で出せたときだけ描き直す
   if (state.secdraft) { box.hidden = false; renderSecEdit(box); return; }
   const { ref, laps } = sectionLaps();
   const s = ref && ref.s;
@@ -380,6 +381,7 @@ function renderSections() {
   box.append(head);
   if (!s.course) { auto.disabled = true; box.append(el('p', { class: 'note' }, 'コースの名前が分からない走行なので、区間の線を残せません')); return; }
   if (!splits.length) { box.append(el('p', { class: 'note' }, `区間の線がまだありません。「区間を自動で置く」で、基準の周（${ref.lap}周）のブレーキの踏み始めに置きます`)); return; }
+  box.append(oppBlock(s, splits.length + 1));
   if (!laps.length) { box.append(el('p', { class: 'note' }, '選んだ周に区間の数がありません（測位が足りない周）')); return; }
   const st = s.stats && s.stats.splits;
   const n = laps[0].x.sec.length;
@@ -431,11 +433,99 @@ function renderSections() {
     `色：紫＝その区間のベスト、緑・赤＝基準の周（${refRow.lap}周）より速い・遅い。選んだ周のうち${SEC_LAPS}周まで`));
 }
 
-// 区間 i（n 区間のうち）の、基準の周の横軸の範囲 [頭, 終わり]。分からなければ null
-function sectionRange(i, n) {
+// ---------------------------------------------------------------- 伸びしろの大きい区間（SP-10-41・仕様 3-7）
+// 区間ごとに「比べる相手（ベストの周か平均の周）の区間タイム − その区間のベスト」を出し、大きい順に3つを地図の上で番号つきの帯にして、
+// 一覧にする（押すとその区間へ寄る）。それぞれに、その区間のベストの周と相手の違いをブレーキ・頂点・速さの数で（計算は web/summary.js）。
+// 使う周は走行のまとめと同じ（この走行か、同じコースの全部）
+function oppBlock(s, n) {
+  const same = s.course ? state.sessions.filter((x) => x.course === s.course) : [s];
+  const all = state.sumScope === 'course' && same.length > 1;
+  const runs = (all ? same : [s]).map((x) => ({ id: x.id, laps: lapsOf(x) }));
+  const o = RunSummary.opportunities(runs, state.oppPartner);
+  const wrap = el('div', { class: 'opps' });
+  const sel = el('select', { title: 'ベストの周：ベストを縮めたいとき（ベストの周がどの区間で、ほかの周のその区間のベストより遅いか）。平均の周：安定させたいとき（区間ごとの平均。中央値より5%以上遅い周はその区間だけ外す）' },
+    el('option', { value: 'best' }, 'ベストの周'), el('option', { value: 'mean' }, '平均の周'));
+  sel.value = state.oppPartner;
+  sel.onchange = () => { state.oppPartner = sel.value; renderSections(); };
+  const onMap = el('input', { type: 'checkbox' });
+  onMap.checked = state.oppMap;
+  onMap.onchange = () => { state.oppMap = onMap.checked; renderSections(); };
+  wrap.append(el('div', { class: 'opphead' }, el('b', {}, '伸びしろ'), ' 比べる相手 ', sel,
+    el('label', { title: '大きい順に3つの区間を、地図の上で番号つきの帯にします' }, onMap, ' 地図に出す'),
+    el('span', { class: 'note' }, all ? `同じコースの${same.length}走行の周から` : 'この走行の周から（周の表の上の「まとめ」で切り替え）')));
+  if (!o || !o.items.length) {
+    wrap.append(el('p', { class: 'note' }, o ? 'どの区間も、比べる相手がその区間のベストです' : '区間タイムがそろった周がありません（測位の抜けた周は使いません）'));
+    return wrap;
+  }
+  const lapName = (L) => {
+    if (!L) return '平均の周';
+    const x = state.sessions.find((v) => v.id === L.id);
+    return all && x ? `${jstDate(x.t0_utc).slice(5, 10).replace('-', '/')} ${L.lap}周` : `${L.lap}周`;
+  };
+  const has = (v) => v !== null && v !== undefined && isFinite(v);
+  const sgn = (v, d) => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(d);
+  const where = (v, d) => (Math.abs(v) < 0.5 ? '同じ所' : `${Math.abs(v).toFixed(d)} m ${v > 0 ? '奥' : '手前'}`);
+  const names = s.split_names || [];
+  const hl = [];
+  o.items.forEach((it, k) => {
+    const r = sectionRange(it.i, n, 's');
+    if (r) hl.push({ a: r[0], b: r[1], label: String(k + 1) });
+    const nums = [];
+    if (has(it.brake)) nums.push(el('span', { title: 'ブレーキの踏み始め（区間の線から m）の違い。奥＝ベストの周の方が遅くまで踏まなかった' }, `ブレーキ ${where(it.brake, 1)}`));
+    if (has(it.apexKmh)) {
+      nums.push(el('span', { title: 'ボトム（区間の中の最小の速さ）の違いと、その位置の違い' },
+        `ボトム ${sgn(it.apexKmh, 1)} km/h` + (has(it.apexAt) ? `（${where(it.apexAt, 0)}）` : '')));
+    }
+    const lat = apexLateral(it, r);
+    if (lat !== null) {
+      nums.push(el('span', { title: 'ボトムの所の、基準の周の線からの横のずれの違い（右が＋）。1 m より小さい違いは測位の誤差の内' },
+        `横 ${lat >= 0 ? '右' : '左'} ${Math.abs(lat).toFixed(1)} m${Math.abs(lat) < 1 ? '（読まない）' : ''}`));
+    }
+    if (has(it.entry) || has(it.exit)) {
+      nums.push(el('span', { title: '区間の頭・終わりの線を越えたときの速さの違い' },
+        `入口 ${has(it.entry) ? sgn(it.entry, 1) : '—'}・出口 ${has(it.exit) ? sgn(it.exit, 1) : '—'} km/h`));
+    }
+    const row = el('div', { class: 'opp', title: '押すと、地図・グラフ・動画をこの区間へ動かします' },
+      el('span', { class: 'oppno' }, String(k + 1)),
+      el('span', { class: 'oppname' }, `区間${it.i + 1}${names[it.i] ? ' ' + names[it.i] : ''}`),
+      el('b', { class: 'opploss' }, `${it.loss.toFixed(3)} 秒`),
+      el('span', { class: 'note' }, `ベスト ${lapName(it.bestLap)} ${it.bestTime.toFixed(3)} ／ ${lapName(it.partnerLap)} ${it.partnerTime.toFixed(3)}`),
+      el('div', { class: 'oppnums' }, el('span', { class: 'note' }, `${lapName(it.bestLap)}は`), ...nums));
+    row.onclick = () => goSection(it.i, n);
+    wrap.append(row);
+  });
+  const partner = o.partner === 'best' ? `ベストの周 ${lapName(o.partnerLap)} ${lapTime(o.partnerTime)}` : `平均の周 ${lapTime(o.partnerTime)}`;
+  wrap.append(el('p', { class: 'note' }, `区間ごとの、ベストとの差の合計 ${o.total.toFixed(3)} 秒（${o.sections}区間。${partner} − 区間ごとのベストの和）。数はその区間のベストの周から見た違い`));
+  CourseMap.setHighlights(state.oppMap ? hl : []);
+  return wrap;
+}
+
+// 伸びしろの区間の、ボトムの所の横のずれの違い（ベストの周 − 比べる周。2周とも重ねていて、相手がベストの周のときだけ）
+function apexLateral(it, r) {
+  const o = state.overlay;
+  if (!o || !o.distance || !r || !it.partnerLap || it.bestApexAt === null || it.partnerApexAt === null) return null;
+  const find = (L) => o.laps.find((l) => l.key === `${L.id}:${L.lap}`);
+  const a = find(it.bestLap), b = find(it.partnerLap);
+  if (!a || !b || !a.off || !b.off) return null;
+  const at = (lap, sd) => {
+    const g = o.grid;
+    let lo = 0, hi = g.length - 1;
+    if (sd < g[0] || sd > g[hi]) return null;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (g[m] <= sd) lo = m; else hi = m; }
+    const u = lap.off[lo], v = lap.off[hi];
+    if (u === null || v === null) return u ?? v;
+    return g[hi] > g[lo] ? u + (v - u) * (sd - g[lo]) / (g[hi] - g[lo]) : u;
+  };
+  const x = at(a, r[0] + it.bestApexAt), y = at(b, r[0] + it.partnerApexAt);
+  return x === null || y === null ? null : x - y;
+}
+
+// 区間 i（n 区間のうち）の、基準の周の横軸の範囲 [頭, 終わり]。分からなければ null。k：'s'（距離）・'t'（時間）。無ければ今の横軸
+function sectionRange(i, n, k) {
   const o = state.overlay, L = mapLines();
   if (!o || !L || !L.splits) return null;
-  const key = state.x === 'dist' ? 's' : 't';
+  const key = k || (state.x === 'dist' ? 's' : 't');
+
   const refLap = o.laps[o.ref];
   const end = key === 's' ? o.ref_length_m : refLap && refLap.time_s;
   const heads = L.splits.map((ln) => { const r = CourseMap.refAt(ln.lat, ln.lon); return r ? r[key] : null; });
