@@ -709,7 +709,7 @@ function renderOutlineControls() {
   if (!e) return;
   const t = OutlineEditor.tool();
   for (const b of document.querySelectorAll('#outedit [data-tool]')) b.classList.toggle('on', b.dataset.tool === t);
-  $('oehelp').textContent = `${OutlineEditor.TOOLS[t] || ''}　｜　道具は図の上で右ボタンを押したまま引く向きか、1〜8 のキーでも切り替わります。Ctrl+S 保存・Ctrl+Z 戻す・Ctrl+Y やり直す・Esc 押しかけを取り消す`;
+  $('oehelp').textContent = `${OutlineEditor.TOOLS[t] || ''}　｜　道具は図の上で右ボタンを押したまま引く向きか、1〜9 のキーでも切り替わります（9 はなぞる）。Ctrl+S 保存・Ctrl+Z 戻す・Ctrl+Y やり直す・Esc 押しかけを取り消す`;
   $('oeundo').disabled = !OutlineEditor.canUndo();
   $('oeredo').disabled = !OutlineEditor.canRedo();
   $('oesave').disabled = !OutlineEditor.dirty();
@@ -725,6 +725,14 @@ function startOutlineEdit() {
     zebraTaper: () => { const v = +$('oezebrataper').value; return isFinite(v) ? Math.min(20, Math.max(0, v)) : 2; },
     boardText: () => $('oeboard').value.trim().slice(0, 12),
     onChange: renderOutlineControls,
+    // なぞった線（m）を裏で縁へ吸い付かせる。返す点も m
+    snap: async (pts, inside, reach) => {
+      let j;
+      try { j = await api('outline/snap', { pts: pts.map((q) => CourseMap.toLatLon(q[0], q[1])), inside, reach }); } catch (e) { throw new Error('裏の処理とつながっていません'); }
+      if (!j.ok) throw new Error(j.error);
+      return { pts: j.pts.map((q) => CourseMap.toXY(q[0], q[1])), found: j.found, shift_m: j.shift_m };
+    },
+    onTrace: (msg, ok) => { status(msg, ok ? 'ok' : 'ng'); CourseMap.redraw(); },
   });
   state.outedit = { sid: s.id, origin: state.overlay.origin.slice() };
   CourseMap.setEditor(OutlineEditor);
@@ -773,7 +781,7 @@ $('oereset').onclick = async () => {
   if (await outlineRequest('reset', { id: s.id })) status('自動で作ったコース図に戻しました', 'ok');
 };
 // ショートカット。Ctrl+S：保存（コース図・線の版・計算チャンネル。画面そのものを保存する窓は出さない）。
-// コース図を直しているとき：Ctrl+Z 戻す、Ctrl+Y・Ctrl+Shift+Z やり直す、1〜8 道具（右ボタンのジェスチャーと同じ順）、Esc 押しかけを取り消す。
+// コース図を直しているとき：Ctrl+Z 戻す、Ctrl+Y・Ctrl+Shift+Z やり直す、1〜8 道具（右ボタンのジェスチャーと同じ順）、9 なぞる、Esc 押しかけを取り消す。
 // 字を打つ欄の中では、Ctrl+S のほかはその欄に任せる
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase(), t = e.target;
@@ -789,6 +797,7 @@ document.addEventListener('keydown', (e) => {
   if (ctrl && key === 'z' && !e.shiftKey) { e.preventDefault(); if (OutlineEditor.undo()) CourseMap.redraw(); }
   else if (ctrl && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); if (OutlineEditor.redo()) CourseMap.redraw(); }
   else if (!ctrl && !e.altKey && /^[1-8]$/.test(e.key)) { e.preventDefault(); setOutlineTool(OutlineEditor.GESTURE[+e.key - 1][0]); }
+  else if (!ctrl && !e.altKey && e.key === '9') { e.preventDefault(); setOutlineTool('trace'); }   // なぞる（ジェスチャーの8つの向きには入れていない）
   else if (e.key === 'Escape' && OutlineEditor.cancelPending()) CourseMap.redraw();
 });
 // 保存していない直しがあるまま閉じようとしたら聞く

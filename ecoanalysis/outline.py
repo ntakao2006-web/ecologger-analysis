@@ -74,6 +74,27 @@ KERB_ALONG_STEP_M = 0.5
 KERB_MIN_FLIPS = 2                      # 白と赤みの入れ替わりがこれだけあればゼブラ（白線は入れ替わらない）
 KERB_GAP = 2                            # 写真の拾いの抜けがこの横断面の数までならつなぐ
 KERB_MIN_RUN = 1                        # 写真の1つの横断面ごとの拾い（まとめは build で）
+SNAP_STEP_M = 1.0                       # なぞった線を吸い付かせるときの点の間隔
+SNAP_REACH_M = 4.0                      # なぞった線から横へ探す遠さ（画面の倍率から決めて送られてこなければ）
+SNAP_REACH_MIN_M, SNAP_REACH_MAX_M = 1.0, 8.0
+SNAP_RES_M = 0.25                       # 横の候補の間隔
+SNAP_WIN_M = 1.5                        # 縁の内と外の路面の割合を見る幅
+SNAP_ALONG_M = 1.0                      # 前後これだけの幅でならす（ゼブラの縞・白い字で揺れないように）
+SNAP_HINT = 0.5                         # なぞった線から離れる損（REACH の所で）
+SNAP_HINT_POW = 2.0                      # 離れの損の形（2 は二乗、1 は距離に比例）
+SNAP_MOVE = 0.25                        # 前後の点で横へ動く損（1 m あたり）
+SNAP_MAX_SHIFT_M = 0.5                  # 前後の点（SNAP_STEP_M）で横へ動けるのはここまで
+SNAP_GSI = 0.5                          # 地図の道路縁が通る所に足す縁らしさ
+SNAP_GSI_SIGMA_M = 0.4
+SNAP_LINE = 0.8                         # 白線の縁らしさの上限（路面と草の境目より少し弱く）
+SNAP_LINE_CONTRAST = 40.0               # 白線の真ん中が両脇よりこれだけ明るければ上限
+SNAP_C_LUM, SNAP_C_HUE = 25.0, 5.0      # 色の段：明るさはこれだけ、青み（b−g）・赤み（r−b）はこれだけの差を1と数える
+SNAP_BINARY = 0.5                       # 路面かどうかの段の重み（写真の色はにじみが倍あって縁が路面側へ寄るので、場所は色の段で決める）
+SNAP_C_W = 1.0                          # 色の段の縁らしさの上限
+SNAP_C_FLOOR, SNAP_C_FULL = 0.3, 1.2    # 色の段がこれより小さければ0（舗装のむら）、これだけ上で1
+SNAP_FOUND = 0.35                      # 縁らしさがこれ以上の所を「見つかった」と数える
+SNAP_MIN_M, SNAP_MAX_M = 4.0, 3000.0
+SNAP_MAX_POINTS = 20000
 TIMEOUT_S = 8
 MAX_BYTES = 2 << 20
 ATTRIBUTION = '国土地理院の地理院地図Vector（道路縁）と航空写真を加工して作成'
@@ -472,7 +493,7 @@ class Outlines:
         grey = (mx - mn < 30) & (mn > 35) & (b - g >= -2) & (r - b <= 4)
         return kerb | white | grey
 
-    def sample(self, origin, px, py):
+    def sample(self, origin, px, py, cache=None):
         """原点からの m の点（同じ形の配列）の航空写真の色。(rgb (…, 3), 読めたか (…), 全部のタイルを読めたか)"""
         lat0, lon0 = origin
         kx = M_PER_DEG * math.cos(math.radians(lat0))
@@ -482,7 +503,7 @@ class Outlines:
         row = np.clip(((Y - TY) * 256).astype(np.int64), 0, 255)
         rgb = np.zeros(px.shape + (3,), np.int16)
         known = np.zeros(px.shape, bool)
-        cache, complete = self._pcache, True
+        cache, complete = (self._pcache if cache is None else cache), True
         keys = TX * (1 << 20) + TY
         for k in np.unique(keys):
             m = keys == k
@@ -769,6 +790,150 @@ class Outlines:
                 w = (np.arange(len(run)) + 1) / (len(run) + 1)
                 v[run] = v[a] + (v[b] - v[a]) * w
         return v
+
+    # ---- なぞった線を縁へ吸い付かせる（SP-10-34）
+    @staticmethod
+    def course_pixels(rgb):
+        """コースの路面（灰色の舗装と白線）なら True。赤い縁石・草・砂利・影は False（縁はゼブラの内側の端に置くため）"""
+        r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+        mx, mn = np.maximum(np.maximum(r, g), b), np.minimum(np.minimum(r, g), b)
+        white = (mn > 185) & (mx - mn < 20)
+        grey = (mx - mn < 30) & (mn > 35) & (b - g >= -2) & (r - b <= 4)
+        return white | grey
+
+    def snap(self, pts, inside=0, segs=None, reach=None):
+        """人がざっとなぞった線 pts [[lat, lon], …] を、近くの縁（航空写真で路面が切れる所）へ寄せた線にする。
+        inside：コースの路面がなぞった向きの左（1）か右（-1）か（0 は分からない）。segs：地理院地図の道路縁（無ければ読む）。
+        reach：横へ探す遠さ（m。画面の倍率から。無ければ SNAP_REACH_M）。
+        1. なぞった線を SNAP_STEP_M おきにしてならし、各点から横へ ±reach を SNAP_RES_M おきに候補にする
+        2. 候補ごとの「縁らしさ」：内と外の SNAP_WIN_M の窓（前後 ±SNAP_ALONG_M も入れる）で、
+           色（明るさ・青み・赤み）の違い（点ごとの山の形で、写真のにじみの真ん中で最も大きい）と、路面（灰色の舗装・白線）の割合がコースの側でどれだけ多いか
+           （半分の重み。向きを見るため）の大きいほう。色の段は、コースの側が路面らしいほど強く見る。白い筋（白線）も拾い、
+           地図の道路縁（測った線）が通る候補には SNAP_GSI を足す
+        3. 縁らしさ − なぞった線からの離れの損を、前後の点で横に跳ばないように（1点で SNAP_MAX_SHIFT_M まで、
+           動いた分だけ損）まとめて最もよい並びを選ぶ（動的計画法）。縁が見つからない所は、なぞった線の近くに残る
+        SUGO 11/8 で、同じ区間を横へ -1〜+1 m ずらしてなぞった5本が、吸い付いたあと中央値 0.13 m の内に集まった（上位10%で 0.3 m）
+        返り値 {pts: [[lat, lon], …]（STEP_M おき）, found: 縁が見つかった点の割合, shift_m: なぞった線から動いた量の中央値}"""
+        p = np.asarray(pts, float)
+        if p.ndim != 2 or p.shape[1] != 2 or len(p) < 2 or len(p) > SNAP_MAX_POINTS or not np.isfinite(p).all() \
+                or np.abs(p[:, 0]).max() > 85 or np.abs(p[:, 1]).max() > 180:
+            raise OutlineError('なぞった線の形が違う')
+        lat0, lon0 = float(p[:, 0].mean()), float(p[:, 1].mean())
+        kx = M_PER_DEG * math.cos(math.radians(lat0))
+        x, y = (p[:, 1] - lon0) * kx, (p[:, 0] - lat0) * M_PER_DEG
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(np.diff(x), np.diff(y)))))
+        if s[-1] < SNAP_MIN_M:
+            raise OutlineError(f'なぞった線が短すぎる（{SNAP_MIN_M:.0f} m より長くなぞってください）')
+        if s[-1] > SNAP_MAX_M:
+            raise OutlineError(f'なぞった線が長すぎる（{SNAP_MAX_M:.0f} m まで）')
+        n = int(math.ceil(s[-1] / SNAP_STEP_M)) + 1
+        ss = np.linspace(0.0, s[-1], n)
+        gx, gy = np.interp(ss, s, x), np.interp(ss, s, y)
+        if n >= 7:                          # 手の震えをならす（両端は動かさない）
+            k = 5
+            sx = np.convolve(np.r_[np.full(k // 2, gx[0]), gx, np.full(k // 2, gx[-1])], np.ones(k) / k, 'valid')
+            sy = np.convolve(np.r_[np.full(k // 2, gy[0]), gy, np.full(k // 2, gy[-1])], np.ones(k) / k, 'valid')
+            gx, gy = sx, sy
+        tx, ty = np.gradient(gx), np.gradient(gy)
+        norm = np.hypot(tx, ty)
+        norm[norm == 0] = 1.0
+        tx, ty = tx / norm, ty / norm
+        nx, ny = -ty, tx                    # なぞった向きの左
+        origin = (lat0, lon0)
+        R = SNAP_REACH_M if reach is None or not math.isfinite(reach) else float(min(SNAP_REACH_MAX_M, max(SNAP_REACH_MIN_M, reach)))
+        offs = np.arange(-R, R + 1e-9, SNAP_RES_M)
+        win = int(round(SNAP_WIN_M / SNAP_RES_M))
+        ext = np.arange(-R - SNAP_WIN_M, R + SNAP_WIN_M + 1e-9, SNAP_RES_M)
+        al = np.arange(-SNAP_ALONG_M, SNAP_ALONG_M + 1e-9, 0.5)
+        px = gx[:, None, None] + nx[:, None, None] * ext[None, :, None] + tx[:, None, None] * al[None, None, :]
+        py = gy[:, None, None] + ny[:, None, None] * ext[None, :, None] + ty[:, None, None] * al[None, None, :]
+        rgb, known, _ok = self.sample(origin, px, py, {})
+        J = np.arange(len(offs))
+        f = rgb.astype(float)
+        feat = np.stack((f.mean(axis=3) / SNAP_C_LUM, (f[..., 2] - f[..., 1]) / SNAP_C_HUE,
+                         (f[..., 0] - f[..., 2]) / SNAP_C_HUE, self.course_pixels(rgb).astype(float)), axis=-1)
+        feat = np.where(known[..., None], feat, 0.0)
+        # 横の位置 j の候補：ext の番号 j + win がその点。左の窓 [j+win, j+2win)、右の窓 [j, j+win) の平均（前後 ±SNAP_ALONG_M も入れる）
+        cf = np.cumsum(np.concatenate((np.zeros((n, 1, 4)), feat.sum(axis=2)), axis=1), axis=1)
+        ck = np.cumsum(np.c_[np.zeros(n), known.sum(axis=2)], axis=1)
+
+        def wmean(a, b):
+            c = ck[:, b] - ck[:, a]
+            with np.errstate(invalid='ignore', divide='ignore'):
+                return (cf[:, b] - cf[:, a]) / c[..., None], c
+        m_l, cl = wmean(J + win, J + 2 * win)
+        m_r, crr = wmean(J, J + win)
+        enough = (cl >= win * len(al) * 0.5) & (crr >= win * len(al) * 0.5)
+        # 色の段：内と外の窓の色（明るさ・青み・赤み）の違い。写真はにじむので、色の移り変わりの真ん中で最も大きくなる
+        # 1で頭打ちにすると山が平らになって真ん中が分からなくなるので、点ごとにいちばん大きい所で割って山の形を残し、
+        # その点の段の強さ（SNAP_C_FLOOR〜+SNAP_C_FULL で 0〜1）を掛ける
+        raw = np.where(enough, np.sqrt(((m_l[..., :3] - m_r[..., :3]) ** 2).sum(axis=-1)), 0.0)
+        raw = np.where(np.isfinite(raw), raw, 0.0)
+        cmax = raw.max(axis=1, keepdims=True)
+        contrast = raw / np.maximum(cmax, 1e-9) * np.clip((cmax - SNAP_C_FLOOR) / SNAP_C_FULL, 0, 1)
+        # 向き：コースの側（inside）のほうが路面らしい段だけを強く見る（逆向きの段は弱く。路面どうしの段は半分）
+        road_in = m_l[..., 3] - m_r[..., 3] if inside > 0 else m_r[..., 3] - m_l[..., 3] if inside < 0 else np.abs(m_l[..., 3] - m_r[..., 3])
+        edge = np.maximum(SNAP_BINARY * road_in, SNAP_C_W * contrast * np.clip(0.5 + road_in, 0.1, 1.0))    # 路面かどうかの段（くっきり）と色の段（路面どうし・草の色が近い所）
+        edge = np.where(enough & np.isfinite(edge), edge, 0.0)
+        # 白線（縁に引かれた白い筋）：真ん中 ±SNAP_RES_M と、両脇の明るさの差
+        lum = np.where(known, f.mean(axis=3), np.nan)
+        sat = np.where(known, (rgb.max(axis=3) - rgb.min(axis=3)).astype(float), np.nan)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            lu, sa = np.nanmean(lum, axis=2), np.nanmean(sat, axis=2)
+            c0 = J + win
+            at = lambda ks: np.nanmean(np.stack([lu[:, np.clip(c0 + k, 0, lu.shape[1] - 1)] for k in ks]), axis=0)
+            side_l, side_r, mid = at((3, 4, 5)), at((-3, -4, -5)), at((-1, 0, 1))
+        line = np.clip((mid - np.maximum(side_l, side_r)) / SNAP_LINE_CONTRAST, 0, 1)
+        line = np.where((sa[:, c0] < 40) & np.isfinite(line), line * SNAP_LINE, 0.0)
+        edge = np.maximum(edge, line)
+        # 地図の道路縁（測った線）が横切る所
+        if segs is None:
+            segs, _ = self.edges(origin, gx, gy)
+        if len(segs):
+            hits = self.ray_hits(gx, gy, nx, ny, tx, ty, segs, np.zeros((n, 2)), np.full((n, 2), R))
+            for side, sg in ((0, 1.0), (1, -1.0)):
+                h = sg * hits[:, side]
+                ok = np.isfinite(h)
+                bump = np.exp(-((offs[None, :] - h[:, None]) / SNAP_GSI_SIGMA_M) ** 2 / 2)
+                edge = edge + np.where(ok[:, None], SNAP_GSI * bump, 0.0)
+        best_here = edge.max(axis=1)
+        found = best_here >= SNAP_FOUND
+        data = -edge + SNAP_HINT * (np.abs(offs[None, :]) / R) ** SNAP_HINT_POW
+        # 動的計画法（横へ1点で SNAP_MAX_SHIFT 番まで）
+        K, mx = len(offs), int(round(SNAP_MAX_SHIFT_M / SNAP_RES_M))
+        cost = data[0].copy()
+        back = np.zeros((n, K), np.int64)
+        for i in range(1, n):
+            best = np.full(K, np.inf)
+            arg = np.zeros(K, np.int64)
+            for d in range(-mx, mx + 1):
+                prev = np.full(K, np.inf)
+                if d >= 0:
+                    prev[d:] = cost[:K - d] if d else cost
+                else:
+                    prev[:d] = cost[-d:]
+                c = prev + SNAP_MOVE * abs(d) * SNAP_RES_M
+                m = c < best
+                best[m] = c[m]
+                arg[m] = (J - d)[m]
+            cost = best + data[i]
+            back[i] = arg
+        path = np.zeros(n, np.int64)
+        path[-1] = int(np.argmin(cost))
+        for i in range(n - 1, 0, -1):
+            path[i - 1] = back[i, path[i]]
+        o = offs[path]
+        if n >= 5:
+            o = np.convolve(np.r_[o[:2][::-1], o, o[-2:][::-1]], np.ones(5) / 5, 'valid')
+        ex, ey = gx + nx * o, gy + ny * o
+        es = np.concatenate(([0.0], np.cumsum(np.hypot(np.diff(ex), np.diff(ey)))))
+        m = max(2, int(math.ceil(es[-1] / STEP_M)) + 1)
+        qs = np.linspace(0.0, es[-1], m)
+        qx, qy = np.interp(qs, es, ex), np.interp(qs, es, ey)
+        return {'pts': [[round(float(lat0 + b / M_PER_DEG), 7), round(float(lon0 + a / kx), 7)] for a, b in zip(qx, qy)],
+                'found': round(float(found.mean()), 3), 'shift_m': round(float(np.median(np.abs(o))), 2)}
 
     def build(self, lat, lon, t_all=None, lat_all=None, lon_all=None):
         """lat・lon：案内にする周。t_all・lat_all・lon_all：走行の全部の測位（縁がコースの中を通っていないかを見る）。

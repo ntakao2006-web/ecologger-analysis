@@ -584,6 +584,14 @@ class Handler(BaseHTTPRequestHandler):
                                                                     paint, mark)})
             except KeyError as e:
                 return self._json({'ok': False, 'error': str(e.args[0])}, 400)
+        if path == '/api/outline/snap':          # なぞった線を縁へ吸い付かせる（SP-10-34）。走行の中身は使わない
+            pts, inside, reach = body.get('pts'), body.get('inside', 0), body.get('reach')
+            if inside not in (-1, 0, 1) or not (reach is None or isinstance(reach, (int, float)) and not isinstance(reach, bool)):
+                return self._json({'ok': False, 'error': 'inside・reach の形が違う'}, 400)
+            try:
+                return self._json({'ok': True, **self.store.outlines.snap(pts, inside, None, reach)})
+            except (outline.OutlineError, TypeError, ValueError) as e:
+                return self._json({'ok': False, 'error': str(e) if isinstance(e, outline.OutlineError) else 'なぞった線の形が違う'}, 400)
         if path in ('/api/outline', '/api/outline/save', '/api/outline/reset'):
             sid, rebuild = body.get('id'), bool(body.get('rebuild'))
             if not isinstance(sid, str):

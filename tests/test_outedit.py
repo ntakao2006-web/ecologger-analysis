@@ -243,5 +243,116 @@ class OutlineEditorTest(unittest.TestCase):
         self.assertEqual(self.o['remapUndo'], [5, -5])
 
 
+# なぞる（SP-10-34）：裏の吸い付き（ui.snap）は、なぞった線の両端のあいだを y = Y の直線にした点を返す偽物にする
+TRACE = r'''
+const fs = require('fs'), vm = require('vm');
+const ctx = {};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[process.argv.length - 1], 'utf8') + '\nthis.OutlineEditor = OutlineEditor;', ctx);
+const E = ctx.OutlineEditor, out = {};
+const sq = [];
+for (let i = 0; i < 50; i++) sq.push([i * 2, 0]);
+for (let i = 0; i < 50; i++) sq.push([100, i * 2]);
+for (let i = 0; i < 50; i++) sq.push([100 - i * 2, 100]);
+for (let i = 0; i < 50; i++) sq.push([0, 100 - i * 2]);
+const ring = sq.concat([sq[0]]);
+const open = [];
+for (let i = 0; i <= 50; i++) open.push([i * 2, 150]);
+const id = (a, b) => [a, b];
+const geo = { k: 4, nearestTrack: (x, y) => [50, 50] };
+let Y = 0, calls = [], msgs = [];
+const ui = { radius: () => 10, zebraW: () => 1, zebraTaper: () => 0, boardText: () => '', onChange: () => {},
+  onTrace: (m, ok) => msgs.push([m, ok]),
+  snap: (pts, inside, reach) => {
+    calls.push({ inside, reach, n: pts.length });
+    const a = pts[0][0], b = pts[pts.length - 1][0], n = Math.round(Math.abs(b - a) / 2);
+    const res = [];
+    for (let i = 0; i <= n; i++) res.push([a + (b - a) * i / n, Y]);
+    return Promise.resolve({ pts: res, found: 0.9, shift_m: 1.5 });
+  } };
+const trace = async (x0, x1, y, yTo) => {
+  Y = yTo;
+  E.setTool('trace');
+  E.down(x0, y, geo);
+  const n = Math.round(Math.abs(x1 - x0) / 0.5);
+  for (let i = 1; i <= n; i++) E.move(x0 + (x1 - x0) * i / n, y + 0.3 * Math.sin(i));
+  E.up();
+  await new Promise((r) => setTimeout(r, 0));
+};
+const yAt = (pts, x, y0) => pts.filter((p) => Math.abs(p[0] - x) < 0.01 && Math.abs(p[1] - y0) < 2).map((p) => p[1]);
+(async () => {
+  E.load({ lines: [ring, open], kerbs: [{ pts: [[30, 0], [40, 0], [50, 0]], ws: [0, 1, 0], side: -1 }], boards: [] }, id, ui);
+  // 輪の下の辺を x = 20 → 60 へ、縁の 1 m 外をなぞる → そのあいだが y = 0.5 に置き換わる（輪のまま・ほかは動かない）
+  await trace(20, 60, -1, 0.5);
+  let L = E.view().lines;
+  out.ring = { closed: L[0].closed, y40: yAt(L[0].pts, 40, 0), y80: yAt(L[0].pts, 80, 0), y10: yAt(L[0].pts, 10, 0), right: yAt(L[0].pts, 100, 50) };
+  out.kerb = E.view().kerbs[0].pts.map((p) => p[1]);
+  out.call = calls[0];
+  out.msg = msgs[msgs.length - 1][1] && msgs[msgs.length - 1][0].includes('置き換え');
+  // 逆向きになぞっても同じ所（コースの側は右になる）
+  await trace(60, 20, -1, 0.8);
+  L = E.view().lines;
+  out.ringBack = { y40: yAt(L[0].pts, 40, 0), y80: yAt(L[0].pts, 80, 0), inside: calls[1].inside, count: L[0].pts.length };
+  // 開いた線を右から左へ
+  await trace(70, 30, 149, 151);
+  L = E.view().lines;
+  out.open = { y50: yAt(L[1].pts, 50, 150), y80: yAt(L[1].pts, 80, 150), y20: yAt(L[1].pts, 20, 150), first: L[1].pts[0], last: L[1].pts[L[1].pts.length - 1] };
+  // 遠い所 → 新しい縁
+  await trace(0, 40, 300, 300);
+  out.added = E.view().lines.length;
+  out.addedOpen = E.view().lines[2].closed === false;
+  // 短すぎる
+  const before = calls.length;
+  await trace(0, 2, 400, 400);
+  out.short = { called: calls.length !== before, ok: msgs[msgs.length - 1][1] };
+  // 戻す
+  E.undo();
+  out.undoAdd = E.view().lines.length;
+  E.undo(); E.undo(); E.undo();
+  out.undoAll = { y40: yAt(E.view().lines[0].pts, 40, 0), kerb: E.view().kerbs[0].pts.map((p) => p[1]) };
+  // 裏が断ったとき：中身は変わらず、知らせだけ
+  ui.snap = () => Promise.reject(new Error('なぞった線の形が違う'));
+  const n0 = JSON.stringify(E.view().lines);
+  await trace(20, 60, -1, 0.5);
+  out.reject = { same: JSON.stringify(E.view().lines) === n0, msg: msgs[msgs.length - 1] };
+  console.log(JSON.stringify(out));
+})();
+'''
+
+
+@unittest.skipUnless(NODE, 'node が無い')
+class TraceTest(unittest.TestCase):
+    def test_trace_replaces_or_adds(self):
+        r = subprocess.run([NODE, '-e', TRACE, str(JS)], capture_output=True, text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        o = json.loads(r.stdout)
+        self.assertTrue(o['ring']['closed'])
+        self.assertEqual(o['ring']['y40'], [0.5])
+        self.assertEqual(o['ring']['y80'], [0])                # 置き換えた所の外は動かない
+        self.assertEqual(o['ring']['y10'], [0])
+        self.assertEqual(o['ring']['right'], [50])
+        self.assertEqual(o['kerb'], [0.5, 0.5, 0.5])            # ゼブラは載り直す
+        self.assertEqual(o['call']['inside'], 1)               # 右へなぞる：コース（輪の中）は左
+        self.assertAlmostEqual(o['call']['reach'], 6)          # 24 画素 / 4 画素毎m
+        self.assertTrue(o['msg'])
+        self.assertEqual(o['ringBack']['y40'], [0.8])
+        self.assertEqual(o['ringBack']['y80'], [0])
+        self.assertEqual(o['ringBack']['inside'], -1)
+        self.assertEqual(o['ringBack']['count'], 200)          # 2 m おきのまま
+        self.assertEqual(o['open']['y50'], [151])
+        self.assertEqual(o['open']['y80'], [150])
+        self.assertEqual(o['open']['y20'], [150])
+        self.assertEqual(o['open']['first'], [0, 150])         # 向きは元の線のまま
+        self.assertEqual(o['open']['last'], [100, 150])
+        self.assertEqual(o['added'], 3)
+        self.assertTrue(o['addedOpen'])
+        self.assertEqual(o['short'], {'called': False, 'ok': False})
+        self.assertEqual(o['undoAdd'], 2)
+        self.assertEqual(o['undoAll'], {'y40': [0], 'kerb': [0, 0, 0]})
+        self.assertTrue(o['reject']['same'])
+        self.assertFalse(o['reject']['msg'][1])
+        self.assertIn('なぞった線の形が違う', o['reject']['msg'][0])
+
+
 if __name__ == '__main__':
     unittest.main()

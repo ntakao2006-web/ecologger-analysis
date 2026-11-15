@@ -316,6 +316,47 @@ class OutlineTest(unittest.TestCase):
         k = outline.check_edit({'lines': [ok], 'kerbs': [{'pts': ok, 'ws': [0, 1.234], 'side': -1}, {'w': 1, 'pts': ok}]})['kerbs']
         self.assertEqual(k, [{'pts': ok, 'ws': [0.0, 1.23], 'side': -1}, {'w': 1.0, 'pts': ok}])
 
+    # ---- なぞった線を縁へ吸い付かせる（SP-10-34）
+    def stroke(self, r, a0, a1, wobble=0.4, n=120):
+        a = np.linspace(a0, a1, n)
+        rr = r + wobble * np.sin(a * 37.0)                  # 手の揺れ（±wobble m、十数 m の波）
+        la, lo = to_latlon(rr * np.cos(a), rr * np.sin(a))
+        return np.stack((la, lo), axis=1).tolist()
+
+    def radius_of(self, pts):
+        a = np.asarray(pts)
+        return np.hypot((a[:, 1] - LON0) * KX, (a[:, 0] - LAT0) * outline.M_PER_DEG)
+
+    def test_snap_to_the_photo_edge(self):
+        o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
+        # 西の半分（地図の縁が無い所）：外の縁の 1.5 m 外の草の上を、左回りに（コースは左）なぞる
+        r = o.snap(self.stroke(R_OUT + 1.5, 0.6 * math.pi, 0.9 * math.pi), inside=1, reach=3)
+        rs = self.radius_of(r['pts'])
+        self.assertLess(np.median(np.abs(rs - R_OUT)), 0.4)
+        self.assertLess(np.percentile(np.abs(rs - R_OUT), 90), 0.8)
+        self.assertGreater(r['found'], 0.9)
+        self.assertAlmostEqual(r['shift_m'], 1.5, delta=0.5)
+        a = np.asarray(r['pts'])
+        step = np.hypot(np.diff(a[:, 0]) * outline.M_PER_DEG, np.diff(a[:, 1]) * KX)
+        self.assertLess(step.max(), outline.STEP_M + 0.01)          # 点は STEP_M おき
+        # 内の縁：舗装の上（縁の 1.2 m 内）を左回りに（コースは右）
+        r = o.snap(self.stroke(R_IN + 1.2, 0.6 * math.pi, 0.9 * math.pi), inside=-1, reach=3)
+        self.assertLess(np.median(np.abs(self.radius_of(r['pts']) - R_IN)), 0.4)
+
+    def test_snap_keeps_the_stroke_where_nothing_is_found(self):
+        o = outline.Outlines(self.tmp.name, Photos(offline=True), fetch=self.fetch)
+        src = self.stroke(R_OUT + 1.5, 0.6 * math.pi, 0.9 * math.pi, wobble=0.0)
+        r = o.snap(src, inside=1, segs=np.zeros((0, 4)), reach=3)
+        self.assertLess(np.median(np.abs(self.radius_of(r['pts']) - (R_OUT + 1.5))), 0.1)
+        self.assertEqual(r['found'], 0.0)
+
+    def test_snap_refuses_bad_strokes(self):
+        o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
+        for bad in ([], [[1, 2]], [[38.14, 140.78], [38.14, 140.78]], [['a', 'b'], [1, 2]], [[95, 0], [96, 0]],
+                    self.stroke(R_OUT, 0, 0.0001)):
+            with self.assertRaises((outline.OutlineError, ValueError, TypeError)):
+                o.snap(bad)
+
     def test_short_guide_is_refused(self):
         o = outline.Outlines(self.tmp.name, Photos(), fetch=self.fetch)
         with self.assertRaises(outline.OutlineError):

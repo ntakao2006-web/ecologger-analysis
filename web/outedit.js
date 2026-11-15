@@ -17,6 +17,10 @@ const OutlineEditor = (() => {
   const MIN_LEN_M = 1;       // ゼブラはこの長さより短くしない
   const LEGACY_SNAP_M = 1;   // 前の形のゼブラを読むとき、内側の端をこの距離の内の縁へ載せる
   const W_MAX = 5;
+  const TRACE_STEP_PX = 3;    // なぞる：この画素より動いたら点を足す
+  const TRACE_REACH_PX = 24;  // なぞる：横へ探す幅（画面の画素。m に直して裏へ送る）
+  const TRACE_ATTACH_PX = 30; // なぞる：両端がこの画素の内に同じ縁があれば、そのあいだを置き換える
+  const TRACE_MIN_M = 4;
   const TOOLS = {
     move: '縁の点をつかんで動かします。なめらかさの距離の内の点も、離れるほど少しずつ一緒に動きます（0 なら1点だけ）。ゼブラは外側の端をつかむと幅が変わり（なめらかさの距離の内も少しずつ）、両端の四角をつかむと縁に沿って伸び縮みします。つかめない所を引くと図が動きます',
     smooth: '同じ縁の上を2か所押すと、そのあいだの細かいガタガタをならします。カーブの形は残します。同じ所を2回押すと線1本まるごと。ならす幅は「なめらかさ」の半分で、押し直すほどなめらかになります。ゼブラは縁と一緒に動きます',
@@ -26,6 +30,7 @@ const OutlineEditor = (() => {
     zebraAdd: '縁の上を2か所押すと、そのあいだの縁の外側にゼブラを足します（幅・端の細りは下の欄）。ゼブラは縁にくっつき、縁を動かすと一緒に動きます',
     zebraDel: '消したいゼブラを押します',
     board: '押した所に看板（字は下の欄）を置きます。看板を押すと消します',
+    trace: 'コースの縁をマウスでざっとなぞると、近くの縁（航空写真で路面が切れる所・色が変わる所・白線、地図の道路縁）へ吸い付いた線にします。探す幅は画面の倍率で決まり（寄るほど細かく）、縁が見つからない所はなぞったまま。なぞり始めと終わりが同じ縁の近くなら、そのあいだを置き換え（ゼブラも載り直す）、そうでなければ新しい縁として足します',
   };
   // 道具の切り替え：図の上で右ボタンを押したまま引いた向き（上から時計回りに8つ）。数字キーの 1〜8 も同じ順
   const GESTURE = [
@@ -34,7 +39,7 @@ const OutlineEditor = (() => {
   ];
 
   let st = null;             // {lines: [{pts, closed}], kerbs: [{pts, ws, side}], boards: [{x, y, text}], undo: [], tool, pend, grab, hover, dirty}
-  let ui = null;             // {radius(), zebraW(), zebraTaper(), boardText(), onChange()}
+  let ui = null;             // {radius(), zebraW(), zebraTaper(), boardText(), onChange(), snap(pts, inside, reach) → Promise<{pts, found, shift_m}>, onTrace(msg, ok)}
 
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const clampW = (w) => (Number.isFinite(w) ? Math.min(W_MAX, Math.max(0, w)) : 1);
@@ -109,7 +114,7 @@ const OutlineEditor = (() => {
     });
     const kerbs = (outline.kerbs || []).map((z) => kerbFrom(z, xy, lines)).filter(Boolean);
     const boards = (outline.boards || []).map((b) => { const [x, y] = toXY(b.lat, b.lon); return { x, y, text: b.text }; });
-    st = { lines, kerbs, boards, undo: [], redo: [], tool: 'move', pend: null, grab: null, hover: null, dirty: false };
+    st = { lines, kerbs, boards, undo: [], redo: [], tool: 'move', pend: null, grab: null, hover: null, dirty: false, trace: null, busy: [] };
   }
 
   function dump(toLatLon) {
@@ -461,6 +466,90 @@ const OutlineEditor = (() => {
     return true;
   }
 
+  // ---------------------------------------------------------------- なぞって吸い付かせる
+  // コースの側（走った線のある側）が、なぞった向きの左なら 1、右なら -1（走った線が無ければ 0）
+  function insideOf(pts, geo) {
+    if (!geo || !geo.nearestTrack) return 0;
+    let v = 0;
+    const step = Math.max(1, Math.floor(pts.length / 9));
+    for (let k = step; k < pts.length - 1; k += step) {
+      const tr = geo.nearestTrack(pts[k][0], pts[k][1]);
+      if (!tr) continue;
+      const a = pts[k - 1], b = pts[k + 1], tx = b[0] - a[0], ty = b[1] - a[1];
+      v += Math.sign(tx * (tr[1] - pts[k][1]) - ty * (tr[0] - pts[k][0]));
+    }
+    return v > 0 ? 1 : v < 0 ? -1 : 0;
+  }
+  // 線の上で q にいちばん近い点の番号と距離
+  function nearestIndex(pts, q) {
+    let bi = -1, bd = Infinity;
+    for (let i = 0; i < pts.length; i++) { const d = dist(pts[i], q); if (d < bd) { bd = d; bi = i; } }
+    return { i: bi, d: bd };
+  }
+  // 吸い付いた線 snapped（m の点の並び）を図へ入れる。両端の attach（m）の内に同じ縁があれば、そのあいだを置き換え
+  // （輪なら、なぞった長さに近いほうのあいだ）、無ければ新しい縁として足す。{how: 'replace'|'add'}
+  function applyTrace(snapped, attach) {
+    if (!st || snapped.length < 2) return null;
+    const A = snapped[0], B = snapped[snapped.length - 1];
+    let best = null;
+    st.lines.forEach((l, idx) => {
+      if (l.pts.length < 2) return;
+      const a = nearestIndex(l.pts, A), b = nearestIndex(l.pts, B);
+      if (a.d <= attach && b.d <= attach && a.i !== b.i && (!best || a.d + b.d < best.d)) best = { idx, ia: a.i, ib: b.i, d: a.d + b.d };
+    });
+    snapshot();
+    if (!best) {
+      st.lines.push({ pts: snapped.map((q) => q.slice()), closed: false });
+      changed();
+      return { how: 'add' };
+    }
+    const it = st.lines[best.idx], n = it.pts.length, glued = glue(it);
+    let ia = best.ia, ib = best.ib;
+    const s = snapped.map((q) => q.slice()), L = cumLen(s)[s.length - 1];
+    if (!it.closed) {
+      if (ia > ib) { s.reverse(); [ia, ib] = [ib, ia]; }
+      it.pts = it.pts.slice(0, ia).concat(s, it.pts.slice(ib + 1));
+    } else {
+      const arc = (i, j) => { let d = 0; for (let k = i; k % n !== j; k++) d += dist(it.pts[k % n], it.pts[(k + 1) % n]); return d; };
+      if (Math.abs(arc(ib, ia) - L) < Math.abs(arc(ia, ib) - L)) { s.reverse(); [ia, ib] = [ib, ia]; }
+      const keep = [];
+      for (let k = ib + 1; k % n !== ia; k++) keep.push(it.pts[k % n]);
+      it.pts = s.concat(keep);
+    }
+    resnap(it, glued);
+    changed();
+    return { how: 'replace' };
+  }
+  function traceDown(x, y, geo) {
+    st.trace = { pts: [[x, y]], geo };
+    return true;
+  }
+  function traceMove(x, y) {
+    const tr = st.trace, last = tr.pts[tr.pts.length - 1];
+    if (dist(last, [x, y]) * tr.geo.k >= TRACE_STEP_PX) tr.pts.push([x, y]);
+  }
+  function traceUp() {
+    const tr = st.trace;
+    st.trace = null;
+    if (!tr || tr.pts.length < 2) return;
+    const pts = tr.pts, len = cumLen(pts)[pts.length - 1];
+    if (len < TRACE_MIN_M) { if (ui.onTrace) ui.onTrace(`なぞった線が短すぎます（${TRACE_MIN_M} m より長くなぞってください）`, false); return; }
+    if (!ui.snap) return;
+    const k = tr.geo.k, mine = st, job = { pts };
+    st.busy.push(job);
+    if (ui.onTrace) ui.onTrace('吸い付かせています…', true);
+    ui.snap(pts, insideOf(pts, tr.geo), TRACE_REACH_PX / k).then((r) => {
+      if (st !== mine) return;              // 直すのをやめた・開き直した
+      st.busy = st.busy.filter((j) => j !== job);
+      const res = applyTrace(r.pts, TRACE_ATTACH_PX / k);
+      if (ui.onTrace) ui.onTrace(`${res.how === 'replace' ? 'そのあいだの縁を置き換えました' : '新しい縁として足しました'}（縁が見つかった所 ${Math.round(r.found * 100)} %、なぞった線から動かした量 ${r.shift_m.toFixed(1)} m。戻すは Ctrl+Z）`, true);
+    }).catch((e) => {
+      if (st !== mine) return;
+      st.busy = st.busy.filter((j) => j !== job);
+      if (ui.onTrace) ui.onTrace(`吸い付かせられませんでした（${(e && e.message) || e}）`, false);
+    });
+  }
+
   // ---------------------------------------------------------------- マウス（map.js から。x・y は m、geo {k 画素/m, nearestTrack}）
   function tolM(geo) { return PICK_PX / geo.k; }
 
@@ -490,6 +579,7 @@ const OutlineEditor = (() => {
 
   // 押した：つかんだら true（図を動かさない）
   function down(x, y, geo) {
+    if (st && st.tool === 'trace') return traceDown(x, y, geo);
     if (!st || st.tool !== 'move') return false;
     const p = pickGrab(x, y, tolM(geo));
     if (!p) return false;
@@ -517,6 +607,7 @@ const OutlineEditor = (() => {
   }
 
   function move(x, y) {
+    if (st && st.trace) { traceMove(x, y); return; }
     const g = st && st.grab;
     if (!g) return;
     const dx = x - g.x0, dy = y - g.y0;
@@ -548,6 +639,7 @@ const OutlineEditor = (() => {
     }
   }
   function up() {
+    if (st && st.trace) { traceUp(); return; }
     if (!st || !st.grab) return;
     const g = st.grab;
     st.grab = null;
@@ -603,9 +695,9 @@ const OutlineEditor = (() => {
     if (t === 'move') st.hover = pickGrab(x, y, tol);
     else if (t === 'join') st.hover = pickEnd(x, y, tol);
     else if (t === 'zebraDel') st.hover = pickPath(x, y, tol, ['kerb']);
-    else if (t === 'board') st.hover = null;
+    else if (t === 'board' || t === 'trace') st.hover = null;
     else st.hover = pickPath(x, y, tol, t === 'erase' ? ['line', 'kerb'] : ['line']);
-    return st.hover ? (t === 'move' ? 'grab' : 'pointer') : t === 'board' ? 'copy' : null;
+    return st.hover ? (t === 'move' ? 'grab' : 'pointer') : t === 'board' ? 'copy' : t === 'trace' ? 'crosshair' : null;
   }
 
   // 図の上に、点・押した1か所目・拾える所を描く（コース図そのものは map.js が view() から描く）
@@ -625,6 +717,14 @@ const OutlineEditor = (() => {
     if (st.tool === 'move' && k * STEP_M >= 3) {                 // ゼブラの両端（伸び縮みさせる所）
       for (const z of st.kerbs) for (const pt of [z.pts[0], z.pts[z.pts.length - 1]]) box(pt, 3.5, '#dc2626', dark ? '#111827' : '#ffffff');
     }
+    const stroke = (pts, color, dash) => {    // なぞっている線・裏で吸い付かせている線
+      if (pts.length < 2) return;
+      g.strokeStyle = color; g.lineWidth = 2; g.setLineDash(dash);
+      g.beginPath(); pts.forEach((q, i) => { const [px, py] = P(q[0], q[1]); if (i) g.lineTo(px, py); else g.moveTo(px, py); }); g.stroke();
+      g.setLineDash([]);
+    };
+    for (const j of st.busy) stroke(j.pts, '#3b82f6', [4, 4]);
+    if (st.trace) stroke(st.trace.pts, '#3b82f6', []);
     const H = st.hover && posOf(st.hover);
     if (H) dot(H, 6, 'rgba(59, 130, 246, 0.35)', '#3b82f6');
     const D = st.pend && posOf(st.pend);
@@ -644,12 +744,12 @@ const OutlineEditor = (() => {
     mv(st);
     st.undo = st.undo.map((u) => JSON.stringify(mv(JSON.parse(u))));
     st.redo = st.redo.map((u) => JSON.stringify(mv(JSON.parse(u))));
-    st.pend = null; st.grab = null; st.hover = null;
+    st.pend = null; st.grab = null; st.hover = null; st.trace = null; st.busy = [];
   }
 
   return {
     TOOLS, GESTURE, remap,
-    load, dump, view, undo, redo, down, move, up, click, hoverAt, overlay,
+    load, dump, view, undo, redo, down, move, up, click, hoverAt, overlay, applyTrace,
     active: () => !!st,
     stop() { st = null; },
     dirty: () => !!(st && st.dirty),
@@ -658,7 +758,7 @@ const OutlineEditor = (() => {
     // 押しかけの1か所目（まっすぐ・消す・つなぐ…）を取り消す。取り消したら true
     cancelPending() { if (!st || !st.pend) return false; st.pend = null; return true; },
     tool: () => st && st.tool,
-    setTool(t) { if (st && TOOLS[t]) { st.tool = t; st.pend = null; st.hover = null; } },
+    setTool(t) { if (st && TOOLS[t]) { st.tool = t; st.pend = null; st.hover = null; st.trace = null; } },
     // 試験用：中身の数
     counts: () => st && { lines: st.lines.length, points: st.lines.reduce((a, l) => a + l.pts.length, 0), kerbs: st.kerbs.length, boards: st.boards.length },
   };
