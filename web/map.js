@@ -1,5 +1,5 @@
 // コース図（自前の canvas）。選んだ周の走った線、コントロールライン・セクターの線、カーソルの位置の点。
-// 図を押すと、基準の周のいちばん近い所へグラフのカーソルを動かす。線を直すときは、押した所へ線を置く。
+// 図を押すと、基準の周のいちばん近い所へグラフのカーソルを動かす（車を追っているときは、車から離れている分だけ線に沿って先へ送る）。線を直すときは、押した所へ線を置く。
 // 座標は、重ね合わせの返事の origin（基準の周の頭の位置）を原点にした m（東が x、北が y）。
 // 航空写真（国土地理院のタイル）を下に敷ける。タイルは裏の /tiles/gsi/ から読み（裏が手元に残す）、
 // 四隅を同じ座標へ直して置く（コースの広さなら、平面に直した誤差は1 mより小さい）。
@@ -723,6 +723,26 @@ const CourseMap = (() => {
     return { i: best, dist: Math.sqrt(bd), s: t.s[best], t: t.t[best], bearing };
   }
 
+  // from の値 v の所の to の値（線形に補う。null の点は飛ばし、端の外は端の値）
+  function interpAt(from, to, v) {
+    let pi = -1;
+    for (let i = 0; i < from.length; i++) {
+      if (from[i] === null || to[i] === null) continue;
+      if (from[i] >= v) {
+        if (pi < 0) return to[i];
+        const f = (v - from[pi]) / ((from[i] - from[pi]) || 1);
+        return to[pi] + (to[i] - to[pi]) * f;
+      }
+      pi = i;
+    }
+    return pi < 0 ? null : to[pi];
+  }
+  // 周の線に沿って、横軸の値 v（距離 's' か時間 't'）から d m 先（負なら手前）の横軸の値。周の端で止まる
+  function alongBy(track, key, v, d) {
+    const s0 = key === 's' ? v : interpAt(track.t, track.s, v);
+    return s0 === null ? null : interpAt(track.s, track[key], s0 + d);
+  }
+
   // 画面の点 (mx, my) の近く（14画素の内）にある車の周。重なれば基準の周
   function pickCar(mx, my, w, h) {
     let best = null, bd = 14 * 14;
@@ -759,6 +779,20 @@ const CourseMap = (() => {
   function bind() {
     const editing = () => editor && editor.active() && data && data.origin;
     let pickReq = null;                       // 車を引いているあいだのカーソルの動かし（1こまに1回）
+    // 追っているとき：押した所が車から離れている分（図の上の m）だけ、基準の周の線に沿ってカーソルを先へ送る。
+    // 遠くを押せば大きく、車のすぐ横をかちかち押せば少しずつ進む（デジスパイスの送り方）。Shift を押しながらだと手前へ戻る
+    const step = (ex, ey, back) => {
+      if (!follow || opts.editing() || cursor === null || !data || !data.origin) return false;
+      const lap = refLap(), p = carAt(lap);
+      if (!p) return false;
+      const r = cv.getBoundingClientRect();
+      const [x, y] = U(ex - r.left, ey - r.top, r.width, r.height);
+      const d = Math.hypot(x - p[0], y - p[1]);
+      const v = alongBy(lap.track, curKey(), cursor, back ? -d : d);
+      if (v === null || !isFinite(v)) return false;
+      opts.onPick(v);
+      return true;
+    };
     const pickSoon = (v) => {
       const first = pickReq === null;
       pickReq = v;
@@ -804,12 +838,13 @@ const CourseMap = (() => {
       if (!drag) return;
       const was = drag; drag = null;
       if (was.edit) { editor.up(); cv.style.cursor = ''; draw(); return; }
-      if (was.car) { cv.style.cursor = ''; draw(); return; }   // 追っているなら、ここで車を真ん中へ戻す
+      if (was.car) { cv.style.cursor = ''; if (!moved) step(was.x, was.y, e.shiftKey); draw(); return; }   // 追っているなら、ここで車を真ん中へ戻す。引かずに押しただけなら少し送る
       if (moved || !data || !data.origin) return;
       const r = cv.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
       const [x, y] = U(was.x - r.left, was.y - r.top, r.width, r.height);
       if (editing()) { editor.click(x, y, geo(r)); editor.hoverAt(x, y, geo(r)); draw(); return; }
+      if (step(was.x, was.y, e.shiftKey)) return;
       const near = nearest(x, y);
       if (opts.editing()) {
         const [lat, lon] = toLatLon(x, y);
@@ -888,6 +923,7 @@ const CourseMap = (() => {
     setEditor(ed) { editor = ed || null; if (cv) cv.style.cursor = ''; draw(); },
     toXY: (lat, lon) => toXY(lat, lon),
     toLatLon: (x, y) => toLatLon(x, y),
+    alongBy: (track, key, v, d) => alongBy(track, key, v, d),   // 試験から呼ぶため
     ready: () => !!(data && data.origin),
     // 画面の上の位置（clientX, clientY）。試しに押す所を決めるため
     toScreen(lat, lon) { const r = cv.getBoundingClientRect(); const [px, py] = P(...toXY(lat, lon), r.width, r.height); return [r.left + px, r.top + py]; },
