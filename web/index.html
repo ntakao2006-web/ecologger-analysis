@@ -21,6 +21,7 @@
   <label class="refpick" title="枠の並べ方。枠の間の線をドラッグすると大きさが、枠の見出しをドラッグしてほかの枠の上下左右へ落とすと並びが変わります">配置 <select id="layoutsel">
     <option value="std">標準</option><option value="video">動画を大きく</option><option value="graph">グラフを大きく</option><option value="side">動画とコース図を左右に</option>
     <option value="mine" hidden>自分で変えた配置</option></select></label>
+  <button id="reportbtn" type="button" title="いま選んでいる周・基準の周・区間の線のまま、コース図・速さとタイムの差・まとめ・伸びしろ・区間・周の表を A4 横1枚にまとめます。印刷か PDF に出せます">レポート</button>
   <span class="grow"></span>
   <span id="status" class="status">つないでいます…</span>
 </header>
@@ -188,6 +189,7 @@
 <script src="video.js"></script>
 <script src="gcircle.js"></script>
 <script src="layout.js"></script>
+<script src="report.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

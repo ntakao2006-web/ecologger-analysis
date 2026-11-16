@@ -237,3 +237,53 @@ button.primary:disabled { opacity: 0.45; }
 .oppphases .phase { padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); }
 .oppphases .phase.loss { color: #fff; background: var(--ng); border-color: var(--ng); }
 .oppphases .phase.gain { color: #fff; background: var(--ok); border-color: var(--ok); }
+/* 印刷向けの1枚のレポート（SP-10-43、web/report.js）。画面では A4 横の紙を覗く形、印刷ではその紙だけを出す。紙はいつも白地（暗い色づかいでも） */
+.report { position: fixed; inset: 0; z-index: 50; background: #6b7280; overflow: auto; display: flex; flex-direction: column; align-items: flex-start; padding: 10px; gap: 10px; }
+.rtools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: var(--panel); color: var(--text); padding: 6px 12px; border-radius: 8px; width: 297mm; margin: 0 auto; }
+.rtools .note { font-size: 12px; color: var(--muted); }
+.rpage { --bg: #ffffff; --panel: #ffffff; --text: #111827; --muted: #4b5563; --line: #d1d5db; --accent: #2563eb; --ok: #15803d; --ng: #b91c1c;
+  --sbest: #7c3aed; --warn: #b45309; --row: #f3f4f6; color-scheme: light;
+  flex: none; width: 297mm; height: 210mm; margin: 0 auto; padding: 7mm 8mm; background: #fff; color: var(--text); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; gap: 2mm; overflow: hidden; font-size: 10.5px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.rpage.roverflow { outline: 3px solid #b91c1c; }
+.rhead { display: flex; align-items: baseline; gap: 12px; border-bottom: 1.5px solid #111827; padding-bottom: 1mm; flex-wrap: wrap; }
+.rhead h2 { margin: 0; font-size: 1.55em; font-weight: 700; }
+.rsub { font-size: 1em; }
+.rmade { margin-left: auto; font-size: 0.85em; color: var(--muted); }
+.rbody { flex: 1; min-height: 0; display: grid; grid-template-columns: 56% 1fr; gap: 3mm; }
+.rleft { display: flex; flex-direction: column; gap: 2mm; min-height: 0; }
+.rright { display: flex; flex-direction: column; gap: 1.6mm; min-height: 0; overflow: hidden; }
+.rbox { border: 1px solid var(--line); border-radius: 4px; padding: 1.2mm 2mm; break-inside: avoid; }
+.rbox h3 { margin: 0 0 0.6mm; font-size: 1em; font-weight: 700; }
+.rmapbox { flex: 1.25; min-height: 0; display: flex; flex-direction: column; }
+.rchartbox { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rmap, .rchart { flex: 1; min-height: 0; width: 100%; display: block; }
+.rpage .runsum { font-size: 1em; margin: 0; gap: 1px 12px; }
+.rpage .runsum .verdict { font-size: 0.9em; }
+.rpage .rpick { font-weight: 600; }
+.rpage .opps { font-size: 1em; }
+.rpage .opphead { margin-bottom: 0.4mm; }
+.rpage .opp { padding: 0.6mm 0; cursor: default; gap: 1px 8px; border-top: 1px dotted var(--line); }
+.rpage .oppno { width: 1.5em; height: 1.5em; line-height: 1.5em; font-size: 0.9em; }
+.rpage .note, .rnote { color: var(--muted); font-size: 0.88em; margin: 0.4mm 0 0; }
+.rtable { border-collapse: collapse; width: 100%; font-size: 0.95em; }
+.rtable th, .rtable td { border-bottom: 1px solid #e5e7eb; padding: 0.25mm 1.2mm; text-align: left; white-space: nowrap; }
+.rtable th { font-weight: 600; color: var(--muted); }
+.rtable .num { text-align: right; }
+.rtable .faster { color: var(--ok); font-weight: 600; } .rtable .slower { color: var(--ng); }
+.rpage .lapdot { display: inline-block; width: 0.75em; height: 0.75em; border-radius: 50%; margin-right: 3px; vertical-align: baseline; }
+.rlaps { columns: 4; column-gap: 3mm; font-size: 0.95em; }
+.rlap { display: grid; grid-template-columns: 2.4em 4.6em 1fr; gap: 0 3px; break-inside: avoid; }
+.rlapno { text-align: right; color: var(--muted); }
+.rlapt { text-align: right; }
+.rlapg { text-align: right; color: var(--muted); font-size: 0.9em; }
+.rlap.rbest .rlapt { color: var(--sbest); font-weight: 700; }
+.rlap.rgap { color: #9ca3af; }
+@page { size: A4 landscape; margin: 0; }
+@media print {
+  html, body { height: auto; background: #fff; display: block; }
+  body.reportopen > *:not(.report) { display: none !important; }
+  body.reportopen .report { position: static; inset: auto; padding: 0; background: #fff; overflow: visible; display: block; }
+  body.reportopen .rtools { display: none; }
+  body.reportopen .rpage { box-shadow: none; outline: none; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

@@ -1619,6 +1619,7 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 $('open').onclick = pickAndOpen;
+$('reportbtn').onclick = () => Report.open();
 $('resume').onclick = resume;
 $('recent').onchange = (e) => { const p = e.target.value; e.target.value = ''; if (p) openPath(p); };
 for (const r of document.querySelectorAll('input[name=mode]')) r.onchange = () => { state.mode = r.value; render(); };

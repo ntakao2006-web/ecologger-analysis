@@ -1104,6 +1104,9 @@ const CourseMap = (() => {
     toLatLon: (x, y) => toLatLon(x, y),
     // 伸びしろの大きい区間を目立たせる（[{a, b, label}]、a・b は基準の周の距離 m。[] で消す）
     setHighlights(list) { highlights = Array.isArray(list) ? list : []; draw(); },
+    // 印刷のレポート（web/report.js）が同じ中身で描き直すための読み出し：伸びしろの帯と、コース図を m に直したもの
+    highlightList: () => highlights.slice(),
+    outlineXY: () => (data && data.origin ? outlineView() : null),
     // 基準の周の横軸の値 a〜b の所が収まるように寄る（区間の表から寄るとき）。追うのはやめる
     fitRange(a, b) {
       const lap = data && data.origin && refLap();
