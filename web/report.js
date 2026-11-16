@@ -10,7 +10,7 @@ const Report = (() => {
   const CHART_LAPS = 4;          // グラフに重ねる周の数（基準の周を先に）
   const SEC_LAPS = 3;            // 区間の表に並べる周の数（基準の周を先に）
   const MAP_PAD_M = 25;          // コース図の、走った線のまわりの余白（m）
-  const SPEED_STOPS = [[37, 99, 235], [245, 158, 11], [220, 38, 38]];   // 速さの色：遅い＝青 → 黄 → 速い＝赤
+  const SPEED_STOPS = [[220, 38, 38], [245, 158, 11], [37, 99, 235]];   // 速さの色：遅い＝赤 → 黄 → 速い＝青（2026-11-16 ユーザー「赤が遅くて青が速いほうがしっくりくる」）
   let root = null;
 
   const has = (v) => v !== null && v !== undefined && isFinite(v);
@@ -37,7 +37,7 @@ const Report = (() => {
     if (w) { status(w, 'ng'); return; }
     close();
     root = el('div', { id: 'reportview', class: 'report' });
-    const print = el('button', { type: 'button', class: 'primary', title: '印刷の窓が開きます。PDF にするときは、プリンターに「Microsoft Print to PDF」か「PDF に保存」を選びます。用紙は A4 横' }, '印刷・PDF…');
+    const print = el('button', { type: 'button', class: 'primary', title: '印刷の窓が開きます。PDF にするときは、プリンターに「PDF として保存」を選びます（「Microsoft Print to PDF」だと縦の紙に横倒しで載ります）。用紙は A4 横' }, '印刷・PDF…');
     print.onclick = () => window.print();
     const shut = el('button', { type: 'button' }, '閉じる');
     shut.onclick = close;

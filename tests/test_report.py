@@ -30,8 +30,8 @@ class ReportTest(unittest.TestCase):
 
     def test_speed_colors(self):
         r = self.r
-        self.assertEqual(r['c0'], 'rgb(37,99,235)')     # 遅い＝青
-        self.assertEqual(r['c1'], 'rgb(220,38,38)')     # 速い＝赤
+        self.assertEqual(r['c0'], 'rgb(220,38,38)')     # 遅い＝赤
+        self.assertEqual(r['c1'], 'rgb(37,99,235)')     # 速い＝青
         self.assertEqual(r['cmid'], 'rgb(245,158,11)')  # 真ん中＝黄
         self.assertEqual(r['clo'], r['c0'])             # 段の外は端の色
         self.assertEqual(r['chi'], r['c1'])
